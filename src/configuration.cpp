@@ -1,0 +1,430 @@
+#include "px4_frequency_sweep/configuration.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cmath>
+#include <stdexcept>
+#include <utility>
+#include <vector>
+
+namespace px4_frequency_sweep {
+namespace {
+
+std::string lower(std::string value)
+{
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+  return value;
+}
+
+float declareFloat(rclcpp::Node& node, const std::string& name, float default_value)
+{
+  return static_cast<float>(node.declare_parameter<double>(name, default_value));
+}
+
+// px4_ros2 builds topics as <prefix> + "/fmu/out/...". A prefix without a leading slash would
+// make that a relative name that gets resolved against the node namespace a second time, so
+// force it absolute and drop any trailing slash to avoid "//fmu".
+std::string normaliseTopicNamespacePrefix(std::string prefix)
+{
+  while (!prefix.empty() && prefix.back() == '/') {
+    prefix.pop_back();
+  }
+  if (!prefix.empty() && prefix.front() != '/') {
+    prefix.insert(prefix.begin(), '/');
+  }
+  return prefix;
+}
+
+std::array<float, 3> declareFloatArray3(rclcpp::Node& node, const std::string& name,
+                                       const std::array<float, 3>& default_value)
+{
+  const std::vector<double> defaults{default_value[0], default_value[1], default_value[2]};
+  const auto values = node.declare_parameter<std::vector<double>>(name, defaults);
+  if (values.size() != 3) {
+    throw std::invalid_argument("Parameter '" + name + "' must contain exactly three values");
+  }
+  return {static_cast<float>(values[0]), static_cast<float>(values[1]),
+          static_cast<float>(values[2])};
+}
+
+std::array<bool, 3> declareBoolArray3(rclcpp::Node& node, const std::string& name,
+                                     const std::array<bool, 3>& default_value)
+{
+  const std::vector<bool> defaults{default_value[0], default_value[1], default_value[2]};
+  const auto values = node.declare_parameter<std::vector<bool>>(name, defaults);
+  if (values.size() != 3) {
+    throw std::invalid_argument("Parameter '" + name + "' must contain exactly three values");
+  }
+  return {values[0], values[1], values[2]};
+}
+
+void requirePositive(const std::string& name, float value)
+{
+  if (!std::isfinite(value) || value <= 0.F) {
+    throw std::invalid_argument("Parameter '" + name + "' must be finite and greater than zero");
+  }
+}
+
+void requireNonNegative(const std::string& name, float value)
+{
+  if (!std::isfinite(value) || value < 0.F) {
+    throw std::invalid_argument("Parameter '" + name + "' must be finite and non-negative");
+  }
+}
+
+void requireFinite(const std::string& name, float value)
+{
+  if (!std::isfinite(value)) {
+    throw std::invalid_argument("Parameter '" + name + "' must be finite");
+  }
+}
+
+void requireFinite(const std::string& name, const std::array<float, 3>& values)
+{
+  for (float value : values) {
+    requireFinite(name, value);
+  }
+}
+
+void validate(const FrequencySweepParameters& parameters)
+{
+  if (parameters.mode.name.empty() || parameters.mode.name.size() >= 25) {
+    throw std::invalid_argument("mode.name must contain between 1 and 24 characters");
+  }
+  requirePositive("mode.update_rate_hz", parameters.mode.update_rate_hz);
+
+  requireFinite("reference.configured_position_ned_m",
+                parameters.reference.configured_position_ned_m);
+  requireFinite("reference.configured_yaw_ned_rad", parameters.reference.configured_yaw_ned_rad);
+  requirePositive("reference.max_initial_offset_m", parameters.reference.max_initial_offset_m);
+
+  requireFinite("setpoint.position_offset_ned_m", parameters.setpoint.position_offset_ned_m);
+  requireFinite("setpoint.velocity_base_ned_m_s", parameters.setpoint.velocity_base_ned_m_s);
+  requireFinite("setpoint.acceleration_base_ned_m_s2",
+                parameters.setpoint.acceleration_base_ned_m_s2);
+  requireFinite("setpoint.yaw_offset_rad", parameters.setpoint.yaw_offset_rad);
+  requireFinite("setpoint.yaw_rate_base_rad_s", parameters.setpoint.yaw_rate_base_rad_s);
+
+  requirePositive("sweep.start_frequency_hz", parameters.sweep.start_frequency_hz);
+  requirePositive("sweep.end_frequency_hz", parameters.sweep.end_frequency_hz);
+  if (parameters.sweep.end_frequency_hz < parameters.sweep.start_frequency_hz) {
+    throw std::invalid_argument("sweep.end_frequency_hz must be >= sweep.start_frequency_hz");
+  }
+  requireFinite("sweep.amplitude", parameters.sweep.amplitude);
+  requirePositive("sweep.duration_s", parameters.sweep.duration_s);
+  requireFinite("sweep.phase_offset_rad", parameters.sweep.phase_offset_rad);
+  requireNonNegative("sweep.fade_in_s", parameters.sweep.fade_in_s);
+  requireNonNegative("sweep.fade_out_s", parameters.sweep.fade_out_s);
+  if (parameters.sweep.fade_in_s + parameters.sweep.fade_out_s > parameters.sweep.duration_s) {
+    throw std::invalid_argument("sweep.fade_in_s + sweep.fade_out_s must not exceed duration");
+  }
+  if (parameters.sweep.repetitions < 1) {
+    throw std::invalid_argument("sweep.repetitions must be at least one");
+  }
+  requireNonNegative("sweep.settle_before_s", parameters.sweep.settle_before_s);
+  requireNonNegative("sweep.settle_between_s", parameters.sweep.settle_between_s);
+  requirePositive("sweep.settling_timeout_s", parameters.sweep.settling_timeout_s);
+  requirePositive("sweep.position_tolerance_m", parameters.sweep.position_tolerance_m);
+  requirePositive("sweep.velocity_tolerance_m_s", parameters.sweep.velocity_tolerance_m_s);
+  requirePositive("sweep.minimum_samples_per_cycle",
+                  parameters.sweep.minimum_samples_per_cycle);
+  if (parameters.mode.update_rate_hz <
+      parameters.sweep.end_frequency_hz * parameters.sweep.minimum_samples_per_cycle) {
+    throw std::invalid_argument(
+        "mode.update_rate_hz is too low for sweep.end_frequency_hz and "
+        "sweep.minimum_samples_per_cycle");
+  }
+
+  requireNonNegative("velocity_integrator.start_delay_s",
+                     parameters.velocity_integrator.start_delay_s);
+  requirePositive("velocity_integrator.leak_time_constant_s",
+                  parameters.velocity_integrator.leak_time_constant_s);
+  requirePositive("velocity_integrator.max_abs_velocity_m_s",
+                  parameters.velocity_integrator.max_abs_velocity_m_s);
+
+  requirePositive("safety.max_horizontal_deviation_m",
+                  parameters.safety.max_horizontal_deviation_m);
+  requirePositive("safety.max_vertical_deviation_m",
+                  parameters.safety.max_vertical_deviation_m);
+  requirePositive("safety.max_speed_m_s", parameters.safety.max_speed_m_s);
+  requirePositive("safety.max_tilt_deg", parameters.safety.max_tilt_deg);
+  if (parameters.safety.max_tilt_deg >= 90.F) {
+    throw std::invalid_argument("safety.max_tilt_deg must be less than 90 degrees");
+  }
+  requirePositive("safety.telemetry_timeout_s", parameters.safety.telemetry_timeout_s);
+
+  if (parameters.logging.directory.empty()) {
+    throw std::invalid_argument("logging.directory must not be empty");
+  }
+  if (parameters.logging.flush_every_n_samples < 1) {
+    throw std::invalid_argument("logging.flush_every_n_samples must be at least one");
+  }
+}
+
+}  // namespace
+
+px4_ros2::ModeBase::Settings declareModeSettings(rclcpp::Node& node)
+{
+  const auto name = node.declare_parameter<std::string>("mode.name", "Frequency Sweep");
+  const bool prevent_arming = node.declare_parameter<bool>("mode.prevent_arming", true);
+  const bool activate_disarmed =
+      node.declare_parameter<bool>("mode.activate_even_while_disarmed", false);
+
+  px4_ros2::ModeBase::Settings settings{name};
+  settings.preventArming(prevent_arming).activateEvenWhileDisarmed(activate_disarmed);
+  return settings;
+}
+
+std::string declareTopicNamespacePrefix(rclcpp::Node& node)
+{
+  return normaliseTopicNamespacePrefix(
+      node.declare_parameter<std::string>("px4_topic_namespace_prefix", ""));
+}
+
+FrequencySweepParameters declareAndLoadParameters(rclcpp::Node& node)
+{
+  FrequencySweepParameters parameters;
+
+  node.get_parameter("mode.name", parameters.mode.name);
+  node.get_parameter("mode.prevent_arming", parameters.mode.prevent_arming);
+  node.get_parameter("mode.activate_even_while_disarmed",
+                     parameters.mode.activate_even_while_disarmed);
+  // Already declared by declareTopicNamespacePrefix() via the ModeBase constructor argument.
+  std::string topic_namespace_prefix;
+  node.get_parameter("px4_topic_namespace_prefix", topic_namespace_prefix);
+  parameters.mode.topic_namespace_prefix =
+      normaliseTopicNamespacePrefix(std::move(topic_namespace_prefix));
+  parameters.mode.update_rate_hz =
+      declareFloat(node, "mode.update_rate_hz", parameters.mode.update_rate_hz);
+
+  parameters.reference.position_source = referenceSourceFromString(node.declare_parameter<std::string>(
+      "reference.position_source", toString(parameters.reference.position_source)));
+  parameters.reference.configured_position_ned_m = declareFloatArray3(
+      node, "reference.configured_position_ned_m",
+      parameters.reference.configured_position_ned_m);
+  parameters.reference.yaw_source = referenceSourceFromString(node.declare_parameter<std::string>(
+      "reference.yaw_source", toString(parameters.reference.yaw_source)));
+  parameters.reference.configured_yaw_ned_rad = declareFloat(
+      node, "reference.configured_yaw_ned_rad", parameters.reference.configured_yaw_ned_rad);
+  parameters.reference.max_initial_offset_m = declareFloat(
+      node, "reference.max_initial_offset_m", parameters.reference.max_initial_offset_m);
+
+  parameters.setpoint.position_enabled = declareBoolArray3(
+      node, "setpoint.position_enabled", parameters.setpoint.position_enabled);
+  parameters.setpoint.velocity_enabled = declareBoolArray3(
+      node, "setpoint.velocity_enabled", parameters.setpoint.velocity_enabled);
+  parameters.setpoint.acceleration_enabled = declareBoolArray3(
+      node, "setpoint.acceleration_enabled", parameters.setpoint.acceleration_enabled);
+  parameters.setpoint.yaw_enabled =
+      node.declare_parameter<bool>("setpoint.yaw_enabled", parameters.setpoint.yaw_enabled);
+  parameters.setpoint.yaw_rate_enabled = node.declare_parameter<bool>(
+      "setpoint.yaw_rate_enabled", parameters.setpoint.yaw_rate_enabled);
+  parameters.setpoint.position_offset_ned_m = declareFloatArray3(
+      node, "setpoint.position_offset_ned_m", parameters.setpoint.position_offset_ned_m);
+  parameters.setpoint.velocity_base_ned_m_s = declareFloatArray3(
+      node, "setpoint.velocity_base_ned_m_s", parameters.setpoint.velocity_base_ned_m_s);
+  parameters.setpoint.acceleration_base_ned_m_s2 = declareFloatArray3(
+      node, "setpoint.acceleration_base_ned_m_s2",
+      parameters.setpoint.acceleration_base_ned_m_s2);
+  parameters.setpoint.yaw_offset_rad =
+      declareFloat(node, "setpoint.yaw_offset_rad", parameters.setpoint.yaw_offset_rad);
+  parameters.setpoint.yaw_rate_base_rad_s = declareFloat(
+      node, "setpoint.yaw_rate_base_rad_s", parameters.setpoint.yaw_rate_base_rad_s);
+
+  parameters.sweep.target = excitationTargetFromString(node.declare_parameter<std::string>(
+      "sweep.target", toString(parameters.sweep.target)));
+  parameters.sweep.horizontal_frame = horizontalFrameFromString(
+      node.declare_parameter<std::string>("sweep.horizontal_frame",
+                                          toString(parameters.sweep.horizontal_frame)));
+  parameters.sweep.waveform = waveformFromString(node.declare_parameter<std::string>(
+      "sweep.waveform", toString(parameters.sweep.waveform)));
+  parameters.sweep.start_frequency_hz = declareFloat(
+      node, "sweep.start_frequency_hz", parameters.sweep.start_frequency_hz);
+  parameters.sweep.end_frequency_hz =
+      declareFloat(node, "sweep.end_frequency_hz", parameters.sweep.end_frequency_hz);
+  parameters.sweep.amplitude =
+      declareFloat(node, "sweep.amplitude", parameters.sweep.amplitude);
+  parameters.sweep.duration_s =
+      declareFloat(node, "sweep.duration_s", parameters.sweep.duration_s);
+  parameters.sweep.phase_offset_rad =
+      declareFloat(node, "sweep.phase_offset_rad", parameters.sweep.phase_offset_rad);
+  parameters.sweep.fade_in_s =
+      declareFloat(node, "sweep.fade_in_s", parameters.sweep.fade_in_s);
+  parameters.sweep.fade_out_s =
+      declareFloat(node, "sweep.fade_out_s", parameters.sweep.fade_out_s);
+  parameters.sweep.repetitions = static_cast<int>(node.declare_parameter<int64_t>(
+      "sweep.repetitions", parameters.sweep.repetitions));
+  parameters.sweep.settle_before_s =
+      declareFloat(node, "sweep.settle_before_s", parameters.sweep.settle_before_s);
+  parameters.sweep.settle_between_s =
+      declareFloat(node, "sweep.settle_between_s", parameters.sweep.settle_between_s);
+  parameters.sweep.settling_timeout_s =
+      declareFloat(node, "sweep.settling_timeout_s", parameters.sweep.settling_timeout_s);
+  parameters.sweep.position_tolerance_m =
+      declareFloat(node, "sweep.position_tolerance_m", parameters.sweep.position_tolerance_m);
+  parameters.sweep.velocity_tolerance_m_s = declareFloat(
+      node, "sweep.velocity_tolerance_m_s", parameters.sweep.velocity_tolerance_m_s);
+  parameters.sweep.minimum_samples_per_cycle = declareFloat(
+      node, "sweep.minimum_samples_per_cycle",
+      parameters.sweep.minimum_samples_per_cycle);
+
+  parameters.velocity_integrator.enabled = node.declare_parameter<bool>(
+      "velocity_integrator.enabled", parameters.velocity_integrator.enabled);
+  parameters.velocity_integrator.start_delay_s = declareFloat(
+      node, "velocity_integrator.start_delay_s",
+      parameters.velocity_integrator.start_delay_s);
+  parameters.velocity_integrator.leak_time_constant_s = declareFloat(
+      node, "velocity_integrator.leak_time_constant_s",
+      parameters.velocity_integrator.leak_time_constant_s);
+  parameters.velocity_integrator.max_abs_velocity_m_s = declareFloat(
+      node, "velocity_integrator.max_abs_velocity_m_s",
+      parameters.velocity_integrator.max_abs_velocity_m_s);
+
+  parameters.safety.enabled =
+      node.declare_parameter<bool>("safety.enabled", parameters.safety.enabled);
+  parameters.safety.abort_on_violation = node.declare_parameter<bool>(
+      "safety.abort_on_violation", parameters.safety.abort_on_violation);
+  parameters.safety.max_horizontal_deviation_m = declareFloat(
+      node, "safety.max_horizontal_deviation_m",
+      parameters.safety.max_horizontal_deviation_m);
+  parameters.safety.max_vertical_deviation_m = declareFloat(
+      node, "safety.max_vertical_deviation_m", parameters.safety.max_vertical_deviation_m);
+  parameters.safety.max_speed_m_s =
+      declareFloat(node, "safety.max_speed_m_s", parameters.safety.max_speed_m_s);
+  parameters.safety.max_tilt_deg =
+      declareFloat(node, "safety.max_tilt_deg", parameters.safety.max_tilt_deg);
+  parameters.safety.telemetry_timeout_s = declareFloat(
+      node, "safety.telemetry_timeout_s", parameters.safety.telemetry_timeout_s);
+
+  parameters.logging.enabled =
+      node.declare_parameter<bool>("logging.enabled", parameters.logging.enabled);
+  parameters.logging.required =
+      node.declare_parameter<bool>("logging.required", parameters.logging.required);
+  parameters.logging.directory = node.declare_parameter<std::string>(
+      "logging.directory", parameters.logging.directory);
+  parameters.logging.flush_every_n_samples = static_cast<int>(node.declare_parameter<int64_t>(
+      "logging.flush_every_n_samples", parameters.logging.flush_every_n_samples));
+
+  validate(parameters);
+  return parameters;
+}
+
+ExcitationTarget excitationTargetFromString(const std::string& value)
+{
+  const std::string normalized = lower(value);
+  if (normalized == "position_x") return ExcitationTarget::PositionX;
+  if (normalized == "position_y") return ExcitationTarget::PositionY;
+  if (normalized == "position_z") return ExcitationTarget::PositionZ;
+  if (normalized == "velocity_x") return ExcitationTarget::VelocityX;
+  if (normalized == "velocity_y") return ExcitationTarget::VelocityY;
+  if (normalized == "velocity_z") return ExcitationTarget::VelocityZ;
+  if (normalized == "acceleration_x") return ExcitationTarget::AccelerationX;
+  if (normalized == "acceleration_y") return ExcitationTarget::AccelerationY;
+  if (normalized == "acceleration_z") return ExcitationTarget::AccelerationZ;
+  if (normalized == "yaw") return ExcitationTarget::Yaw;
+  if (normalized == "yaw_rate") return ExcitationTarget::YawRate;
+  throw std::invalid_argument(
+      "sweep.target must be position_x/y/z, velocity_x/y/z, acceleration_x/y/z, yaw, or "
+      "yaw_rate");
+}
+
+std::string toString(ExcitationTarget target)
+{
+  switch (target) {
+    case ExcitationTarget::PositionX:
+      return "position_x";
+    case ExcitationTarget::PositionY:
+      return "position_y";
+    case ExcitationTarget::PositionZ:
+      return "position_z";
+    case ExcitationTarget::VelocityX:
+      return "velocity_x";
+    case ExcitationTarget::VelocityY:
+      return "velocity_y";
+    case ExcitationTarget::VelocityZ:
+      return "velocity_z";
+    case ExcitationTarget::AccelerationX:
+      return "acceleration_x";
+    case ExcitationTarget::AccelerationY:
+      return "acceleration_y";
+    case ExcitationTarget::AccelerationZ:
+      return "acceleration_z";
+    case ExcitationTarget::Yaw:
+      return "yaw";
+    case ExcitationTarget::YawRate:
+      return "yaw_rate";
+  }
+  throw std::logic_error("Unhandled excitation target");
+}
+
+Waveform waveformFromString(const std::string& value)
+{
+  const std::string normalized = lower(value);
+  if (normalized == "linear") return Waveform::Linear;
+  if (normalized == "logarithmic" || normalized == "log") return Waveform::Logarithmic;
+  throw std::invalid_argument("sweep.waveform must be 'linear' or 'logarithmic'");
+}
+
+std::string toString(Waveform waveform)
+{
+  return waveform == Waveform::Linear ? "linear" : "logarithmic";
+}
+
+ReferenceSource referenceSourceFromString(const std::string& value)
+{
+  const std::string normalized = lower(value);
+  if (normalized == "activation") return ReferenceSource::Activation;
+  if (normalized == "configured") return ReferenceSource::Configured;
+  throw std::invalid_argument("Reference source must be 'activation' or 'configured'");
+}
+
+std::string toString(ReferenceSource source)
+{
+  return source == ReferenceSource::Activation ? "activation" : "configured";
+}
+
+HorizontalFrame horizontalFrameFromString(const std::string& value)
+{
+  const std::string normalized = lower(value);
+  if (normalized == "ned") return HorizontalFrame::Ned;
+  if (normalized == "heading" || normalized == "body_heading") return HorizontalFrame::Heading;
+  throw std::invalid_argument("sweep.horizontal_frame must be 'ned' or 'heading'");
+}
+
+std::string toString(HorizontalFrame frame)
+{
+  return frame == HorizontalFrame::Ned ? "ned" : "heading";
+}
+
+bool isAccelerationTarget(ExcitationTarget target)
+{
+  return target == ExcitationTarget::AccelerationX ||
+         target == ExcitationTarget::AccelerationY ||
+         target == ExcitationTarget::AccelerationZ;
+}
+
+std::size_t targetAxis(ExcitationTarget target)
+{
+  switch (target) {
+    case ExcitationTarget::PositionX:
+    case ExcitationTarget::VelocityX:
+    case ExcitationTarget::AccelerationX:
+      return 0;
+    case ExcitationTarget::PositionY:
+    case ExcitationTarget::VelocityY:
+    case ExcitationTarget::AccelerationY:
+      return 1;
+    case ExcitationTarget::PositionZ:
+    case ExcitationTarget::VelocityZ:
+    case ExcitationTarget::AccelerationZ:
+      return 2;
+    case ExcitationTarget::Yaw:
+    case ExcitationTarget::YawRate:
+      break;
+  }
+  throw std::invalid_argument("Yaw targets do not have a translational axis");
+}
+
+}  // namespace px4_frequency_sweep

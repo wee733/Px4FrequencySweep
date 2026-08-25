@@ -1,0 +1,83 @@
+# The '/**' wildcard matches the node under any name or namespace. A key naming the node
+# explicitly would silently stop matching if the node is ever renamed or namespaced, and every
+# parameter below would fall back to its C++ default -- including the safety limits.
+/**:
+  ros__parameters:
+    # '/fmu/in/...' and '/fmu/out/...'. Set it to match the simulator's UXRCE_DDS_NS, e.g."/drone0" or "/iris1".
+    px4_topic_namespace_prefix: ""
+
+    # PX4 external-mode registration. Keep the displayed name shorter than 25 characters.
+    mode.name: "Frequency Sweep"
+    mode.update_rate_hz: 100.0
+    mode.prevent_arming: true
+    mode.activate_even_while_disarmed: false
+
+    # Reference sources: "activation" captures the current hover point when the mode is selected;
+    # "configured" uses the explicit NED values below. NED Z is negative above the local origin.
+    reference.position_source: "activation"
+    reference.configured_position_ned_m: [0.0, 0.0, -2.0]
+    reference.yaw_source: "activation"
+    reference.configured_yaw_ned_rad: 0.0
+    reference.max_initial_offset_m: 2.0
+
+
+    setpoint.position_enabled: [false, false, false]
+    setpoint.velocity_enabled: [true, true, true]
+    setpoint.acceleration_enabled: [true, true, true]
+    setpoint.yaw_enabled: true
+    setpoint.yaw_rate_enabled: false
+
+    # Position is an offset from the selected reference. Other values are absolute NED baselines.
+    setpoint.position_offset_ned_m: [0.0, 0.0, 0.0]
+    setpoint.velocity_base_ned_m_s: [0.0, 0.0, 0.0]
+    setpoint.acceleration_base_ned_m_s2: [0.0, 0.0, 0.0]
+    setpoint.yaw_offset_rad: 0.0
+    setpoint.yaw_rate_base_rad_s: 0.0
+
+    # Valid targets:
+    # position_x/y/z, velocity_x/y/z, acceleration_x/y/z, yaw, yaw_rate.
+    # Amplitude units follow the target: m, m/s, m/s^2, rad, or rad/s.
+    sweep.target: "acceleration_y"
+    # "ned": x/y mean North/East. "heading": x/y mean forward/right at activation yaw and are
+    # rotated into NED before publishing.
+    sweep.horizontal_frame: "ned"
+    sweep.waveform: "linear"        # linear | logarithmic
+    sweep.start_frequency_hz: 0.1
+    sweep.end_frequency_hz: 5.0
+    sweep.amplitude: 0.5
+    sweep.duration_s: 30.0
+    sweep.phase_offset_rad: 0.0
+    sweep.fade_in_s: 1.0
+    sweep.fade_out_s: 1.0
+    sweep.repetitions: 1
+
+    # Before each excitation the mode commands a full position/yaw hold and waits until stable.
+    sweep.settle_before_s: 5.0
+    sweep.settle_between_s: 5.0
+    sweep.settling_timeout_s: 30.0
+    sweep.position_tolerance_m: 0.3
+    sweep.velocity_tolerance_m_s: 0.25
+    sweep.minimum_samples_per_cycle: 10.0
+
+    # For acceleration sweeps only: leaky trapezoidal integration can generate a matched velocity
+    # feed-forward. It is published only on axes enabled by setpoint.velocity_enabled.
+    velocity_integrator.enabled: true
+    velocity_integrator.start_delay_s: 0.1
+    velocity_integrator.leak_time_constant_s: 1.33
+    velocity_integrator.max_abs_velocity_m_s: 3.0
+
+    # Limits are relative to the captured/configured reference. A violation switches to a hold
+    # setpoint and reports mode failure; PX4/RC/GCS remains responsible for the next mode switch.
+    safety.enabled: true
+    safety.abort_on_violation: true
+    safety.max_horizontal_deviation_m: 5.0
+    safety.max_vertical_deviation_m: 2.0
+    safety.max_speed_m_s: 5.0
+    safety.max_tilt_deg: 35.0
+    safety.telemetry_timeout_s: 0.5
+
+    # Use an absolute persistent path on a real companion computer if data must survive reboot.
+    logging.enabled: true
+    logging.required: false
+    logging.directory: "/tmp/px4_frequency_sweep"
+    logging.flush_every_n_samples: 100
