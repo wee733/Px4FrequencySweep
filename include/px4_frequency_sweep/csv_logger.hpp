@@ -30,8 +30,7 @@ class CsvLogger {
 
  private:
   static float optionalOrNan(const std::optional<float>& value);
-  // ros_time_s is a Unix epoch value (~1.8e9). The stream runs at setprecision(9) for the float
-  // columns, which would round it to 10-second granularity, so it needs fixed notation.
+  // Epoch seconds need fixed notation; setprecision(9) alone would round to ~10 s granularity.
   void writeEpochSeconds(double seconds);
 
   std::ofstream stream_;

@@ -46,7 +46,7 @@ class FrequencySweepMode : public px4_ros2::ModeBase {
   TrajectoryCommand sweepCommand(const SweepSample& sample, float dt_s,
                                  float sweep_elapsed_s);
   void publish(const TrajectoryCommand& command);
-  // dt_s is logged unclamped on purpose: loop jitter is what the column exists to expose.
+  // dt_s is logged unclamped on purpose: the column exists to expose loop jitter.
   void publishAndLog(const TrajectoryCommand& command, const SweepSample& sample,
                      float phase_elapsed_s, float dt_s);
   TelemetrySnapshot telemetrySnapshot() const;
@@ -69,8 +69,7 @@ class FrequencySweepMode : public px4_ros2::ModeBase {
   rclcpp::Time phase_start_time_{};
   rclcpp::Time last_safety_warning_time_{};
   float stable_time_s_{0.F};
-  // Distance from the activation point to the reference, captured once at activation. Widens the
-  // safety deviation budget while TransitToReference is active.
+  // Captured at activation; widens the safety deviation budget during TransitToReference.
   float transit_distance_m_{0.F};
   std::size_t stage_index_{0};
   int repetition_index_{0};

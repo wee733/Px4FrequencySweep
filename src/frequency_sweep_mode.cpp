@@ -43,15 +43,15 @@ std::array<float, 2> horizontalDirectionNed(ExcitationTarget target, HorizontalF
 
   const float cosine = std::cos(reference_yaw_ned_rad);
   const float sine = std::sin(reference_yaw_ned_rad);
-  // Heading-frame X is forward; Y is right. Both are rotated into earth-fixed NED.
+  // Heading frame: X forward, Y right, rotated into NED.
   return axis == 0 ? std::array<float, 2>{cosine, sine}
                    : std::array<float, 2>{-sine, cosine};
 }
 
 }  // namespace
 
-// Initialisation order matters: the ModeBase argument expressions run first and declare
-// 'mode.*' plus 'px4_topic_namespace_prefix', which declareAndLoadParameters() then reads back.
+// Init order matters: the ModeBase argument expressions declare the parameters that
+// declareAndLoadParameters() then reads back.
 FrequencySweepMode::FrequencySweepMode(rclcpp::Node& node)
     : ModeBase(node, declareModeSettings(node), declareTopicNamespacePrefix(node)),
       parameters_(declareAndLoadParameters(node)),
@@ -174,8 +174,7 @@ void FrequencySweepMode::onActivate()
     }
   }
 
-  // Only enter the transit phase when there is somewhere to go. A captured reference is by
-  // definition already reached, and the deviation budget must not be widened for it.
+  // A captured reference is already reached, so skip the transit and its widened budget.
   const bool needs_transit = transit_distance_m_ > parameters_.sweep.position_tolerance_m;
   transitionTo(needs_transit ? ModePhase::TransitToReference : ModePhase::SettlingBeforeSweep);
 
@@ -239,7 +238,7 @@ void FrequencySweepMode::updateSetpoint(float dt_s)
   switch (phase_) {
     case ModePhase::TransitToReference: {
       publishAndLog(holdCommand(reference_position_ned_m_, reference_yaw_ned_rad_), SweepSample{},
-                    phase_elapsed_s);
+                    phase_elapsed_s, dt_s);
 
       if (referenceReached()) {
         RCLCPP_INFO(node().get_logger(), "Reached the reference after %.1f s; settling.",
@@ -325,13 +324,10 @@ void FrequencySweepMode::transitionTo(ModePhase phase)
 
 const SweepStage& FrequencySweepMode::currentStage() const
 {
-  // stage_index_ is only advanced by advanceToNextStageOrFinish(), which stops at the last stage,
-  // and declareAndLoadParameters() rejects an empty stage list.
   return parameters_.stages.at(stage_index_);
 }
 
-// Returns true when another stage is queued, false when the whole sequence is done (in which case
-// the mode has already been moved into CompletedHold).
+// False means the sequence is done and the mode is already in CompletedHold.
 bool FrequencySweepMode::advanceToNextStageOrFinish()
 {
   if (stage_index_ + 1 >= parameters_.stages.size()) {
@@ -418,9 +414,7 @@ std::optional<std::string> FrequencySweepMode::safetyViolation() const
     return "telemetry is stale or estimator validity flags are false";
   }
 
-  // Deviations are measured from the reference, so during transit the aircraft legitimately starts
-  // a full transit distance away. Without this allowance a reference farther than
-  // max_horizontal_deviation_m would abort the instant the mode activated.
+  // Deviations are measured from the reference, so a transit legitimately starts far from it.
   const float transit_allowance_m =
       phase_ == ModePhase::TransitToReference ? transit_distance_m_ : 0.F;
 
@@ -504,8 +498,6 @@ TrajectoryCommand FrequencySweepMode::sweepCommand(const SweepSample& sample, fl
   }
   const auto& integrated_velocity =
       velocity_integrator_.update(acceleration_excitation, dt_s, sweep_elapsed_s);
-  // The integral is published only where the stage asks for it. An axis can stay velocity-
-  // controlled at its baseline without receiving the excitation integral.
   for (std::size_t axis = 0; axis < 3; ++axis) {
     if (stage.velocity_enabled[axis] && stage.integrator_publish_enabled[axis]) {
       command.velocity_ned_m_s[axis] =
@@ -513,8 +505,8 @@ TrajectoryCommand FrequencySweepMode::sweepCommand(const SweepSample& sample, fl
     }
   }
 
-  // The excited component is written last so it overrides the baseline set above. In the heading
-  // frame a horizontal excitation is spread over both NED components, so both get rewritten.
+  // Written last to override the baseline; a heading-frame horizontal excitation spreads over
+  // both NED components.
   const bool yaw_target = isYawTarget(stage.target);
   const std::size_t target_axis = yaw_target ? 0 : targetAxis(stage.target);
   const bool spread_horizontally = !yaw_target && target_axis < 2 &&
@@ -615,8 +607,7 @@ TelemetrySnapshot FrequencySweepMode::telemetrySnapshot() const
   snapshot.angular_velocity_frd_rad_s = {nan, nan, nan};
   if (angular_velocity_->lastValid(telemetryTimeout(parameters_))) {
     snapshot.angular_velocity_frd_rad_s = toArray(angular_velocity_->angularVelocityFrd());
-    // The accessors above drop the message header. Keep the PX4-clock timestamps so each row can
-    // be located in the ulog, and so the sample-to-receive gap gives the offboard link delay.
+    // The accessors drop the header; keep the PX4 timestamps to locate the row in the ulog.
     const auto& message = angular_velocity_->last();
     snapshot.px4_timestamp_us = message.timestamp;
     snapshot.px4_timestamp_sample_us = message.timestamp_sample;

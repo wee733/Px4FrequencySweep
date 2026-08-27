@@ -16,9 +16,7 @@ bool isPositionTarget(ExcitationTarget target);
 bool isVelocityTarget(ExcitationTarget target);
 bool isYawTarget(ExcitationTarget target);
 
-// Declares 'px4_topic_namespace_prefix' and returns it normalised to an absolute prefix
-// without a trailing slash. Empty means the stock '/fmu/...' topics, which is what a real
-// vehicle uses; a simulator that namespaces its uXRCE-DDS client needs e.g. "/drone0".
+// Normalised to an absolute prefix without a trailing slash; empty means stock '/fmu/...'.
 std::string declareTopicNamespacePrefix(rclcpp::Node& node);
 
 FrequencySweepParameters declareAndLoadParameters(rclcpp::Node& node);
@@ -35,10 +33,8 @@ std::string toString(HorizontalFrame frame);
 bool isAccelerationTarget(ExcitationTarget target);
 std::size_t targetAxis(ExcitationTarget target);
 
-// Rotational axis index used by the identification tooling: 0=roll, 1=pitch, 2=yaw, 3=thrust.
-// This is NOT targetAxis(): that returns the NED translational axis (X=0, Y=1, Z=2). A Y
-// acceleration excites roll, so targetAxis()==1 but sysidAxis()==0. Returns -1 for targets that
-// do not map onto a single rotational axis (horizontal position/velocity).
+// Rotational axis for the identification tooling: 0=roll, 1=pitch, 2=yaw, 3=thrust, -1 if the
+// target maps onto no single rotational axis. Not targetAxis(), which is the NED axis.
 int sysidAxis(ExcitationTarget target);
 
 }  // namespace px4_frequency_sweep

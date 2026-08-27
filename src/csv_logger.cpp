@@ -46,7 +46,6 @@ bool CsvLogger::open(const FrequencySweepParameters& parameters,
 
   try {
     std::filesystem::create_directories(parameters.logging.directory);
-    // One file per run covers every stage; the 'stage' column separates them.
     const std::string filename = "frequency_sweep_" + timestampForFilename() + ".csv";
     path_ = (std::filesystem::path(parameters.logging.directory) / filename).string();
     stream_.open(path_, std::ios::out | std::ios::trunc);
@@ -79,8 +78,7 @@ bool CsvLogger::open(const FrequencySweepParameters& parameters,
   writeArray(stream_, reference_position_ned_m);
   stream_ << '\n';
   stream_ << "# reference_yaw_ned_rad=" << reference_yaw_ned_rad << '\n';
-  // Column names for angular rate and attitude match the simulation-side schema
-  // (ang_vel_*, fc_*) so one analysis script can read both sim and flight logs.
+  // ang_vel_*/fc_* names match the simulation-side schema so one script reads both.
   stream_ << "ros_time_s,px4_timestamp_us,px4_timestamp_sample_us,dt_s,phase,stage,target,"
              "sweep_axis,sweep_amp,repetition,phase_elapsed_s,sweep_frequency_hz,"
              "sweep_envelope,"

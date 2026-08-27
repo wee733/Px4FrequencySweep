@@ -10,8 +10,7 @@
 #include <vector>
 
 #ifndef PX4_FREQUENCY_SWEEP_PACKAGE_DIR
-// Only reachable if this file is built outside the package's CMake target; relative log paths then
-// fall back to the working directory.
+// Only when built outside the package CMake target; relative log paths then use the cwd.
 #define PX4_FREQUENCY_SWEEP_PACKAGE_DIR ""
 #endif
 
@@ -93,10 +92,8 @@ void requireFinite(const std::string& name, const std::array<float, 3>& values)
   }
 }
 
-// PX4's PositionControl::_inputValid() rejects the whole TrajectorySetpoint unless the X and Y
-// components of each of position, velocity and acceleration are either both finite or both NaN,
-// and unless every axis carries at least one finite setpoint. Catching that here turns a
-// mid-flight failsafe into a startup error.
+// PX4's PositionControl::_inputValid() rejects the whole setpoint unless X and Y of each field
+// are both finite or both NaN. Checking here turns a mid-flight failsafe into a startup error.
 void requireHorizontalPairing(const std::string& stage_name, const std::string& field,
                               const std::array<bool, 3>& enabled)
 {
@@ -109,8 +106,7 @@ void requireHorizontalPairing(const std::string& stage_name, const std::string& 
   }
 }
 
-// Reads sweep.sequence, then declares stages.<name>.* for each entry. Stage names come from a
-// parameter, so the per-stage parameters cannot be declared up front.
+// Stage names come from sweep.sequence, so stages.<name>.* cannot be declared up front.
 std::vector<SweepStage> declareStages(rclcpp::Node& node)
 {
   const auto sequence =
@@ -184,7 +180,6 @@ void validateStage(const SweepStage& stage)
     }
   }
 
-  // The excitation has to reach a field PX4 will actually read.
   const bool target_published =
       isYawTarget(stage.target)
           ? (stage.target == ExcitationTarget::Yaw ? stage.yaw_enabled : stage.yaw_rate_enabled)
@@ -285,10 +280,8 @@ void validate(const FrequencySweepParameters& parameters)
   }
 }
 
-// A relative logging.directory is taken as relative to this package's source tree, not to the
-// launch working directory: 'logs' must land in Px4FrequencySweep/logs no matter where the node is
-// started from, and the YAML has to stay free of machine-specific absolute paths for the repo to be
-// publishable. An absolute value is honoured as given, which is the companion-computer case.
+// A relative directory resolves against the package source tree, not the launch cwd, so 'logs'
+// always lands in Px4FrequencySweep/logs. Absolute values are honoured as given.
 std::string resolveLogDirectory(const std::string& configured)
 {
   const std::filesystem::path path(configured);
@@ -352,9 +345,8 @@ FrequencySweepParameters declareAndLoadParameters(rclcpp::Node& node)
       node, "reference.max_transit_distance_m", parameters.reference.max_transit_distance_m);
   parameters.reference.transit_timeout_s = declareFloat(
       node, "reference.transit_timeout_s", parameters.reference.transit_timeout_s);
-  // max_initial_offset_m was a "must already be within" check; it is now a transit budget with a
-  // different name and a much larger default. An unrecognised key is silently ignored by rclcpp,
-  // so fail loudly rather than let a stale config quietly lose its limit.
+  // rclcpp ignores unknown keys, so reject the renamed max_initial_offset_m explicitly rather
+  // than let a stale config silently lose its limit.
   if (node.get_node_options().parameter_overrides().end() !=
       std::find_if(node.get_node_options().parameter_overrides().begin(),
                    node.get_node_options().parameter_overrides().end(),
@@ -580,22 +572,21 @@ std::size_t targetAxis(ExcitationTarget target)
 int sysidAxis(ExcitationTarget target)
 {
   switch (target) {
-    // A +Y acceleration command is served by rolling right, so the Y excitation identifies roll.
+    // +Y acceleration is served by rolling right.
     case ExcitationTarget::AccelerationY:
       return 0;
-    // Likewise a +X acceleration is served by pitching forward.
+    // +X acceleration is served by pitching forward.
     case ExcitationTarget::AccelerationX:
       return 1;
     case ExcitationTarget::Yaw:
     case ExcitationTarget::YawRate:
       return 2;
-    // Vertical excitation lands on the thrust channel rather than a rotational axis.
+    // Vertical excitation lands on thrust, not a rotational axis.
     case ExcitationTarget::PositionZ:
     case ExcitationTarget::VelocityZ:
     case ExcitationTarget::AccelerationZ:
       return 3;
-    // Horizontal position/velocity excitation drives the whole cascade; the attitude response is
-    // not attributable to one axis, so the identification tooling cannot use a single index.
+    // Drives the whole cascade; the attitude response maps to no single axis.
     case ExcitationTarget::PositionX:
     case ExcitationTarget::PositionY:
     case ExcitationTarget::VelocityX:

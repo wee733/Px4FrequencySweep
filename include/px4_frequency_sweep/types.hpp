@@ -9,10 +9,7 @@ namespace px4_frequency_sweep {
 
 enum class ModePhase {
   Inactive,
-  // Flying to a configured reference that is deliberately away from the activation point. Kept
-  // separate from settling so the safety deviation budget can account for the transit: measured
-  // from the reference, the aircraft starts a full transit distance away, which would otherwise
-  // trip max_horizontal_deviation_m the instant the mode activates.
+  // Separate from settling so the safety deviation budget can allow for the transit distance.
   TransitToReference,
   SettlingBeforeSweep,
   Sweeping,
@@ -56,12 +53,8 @@ struct TelemetrySnapshot {
   std::array<float, 3> attitude_rpy_rad{};
   std::array<float, 3> angular_velocity_frd_rad_s{};
 
-  // PX4-clock timestamps carried by the angular velocity message (microseconds since PX4 boot).
-  // These are what makes a CSV row addressable in the ulog: 'ros_time_s' is the companion
-  // computer's clock, and nothing else in the file relates the two time bases. 'publish' is when
-  // PX4 sent the message, 'sample' is when the underlying data was measured -- the gap between
-  // 'sample' and the ROS receive time is the offboard pipeline delay.
-  // Zero means the angular velocity subscription had no valid message for this row.
+  // PX4 boot clock (us), from the angular velocity message. Relates a CSV row to the ulog;
+  // ros_time_s alone cannot. Zero means no valid message for this row.
   uint64_t px4_timestamp_us{0};
   uint64_t px4_timestamp_sample_us{0};
 };
