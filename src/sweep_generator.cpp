@@ -19,7 +19,7 @@ float halfCosineRamp(float normalized_time)
 
 SweepGenerator::SweepGenerator(SweepParameters parameters) : parameters_(std::move(parameters)) {}
 
-SweepSample SweepGenerator::sample(float elapsed_s) const
+SweepSample SweepGenerator::sample(float elapsed_s, float amplitude) const
 {
   const float clamped_time = std::clamp(elapsed_s, 0.F, parameters_.duration_s);
   const float current_envelope = envelope(clamped_time);
@@ -28,7 +28,7 @@ SweepSample SweepGenerator::sample(float elapsed_s) const
   SweepSample result;
   result.instantaneous_frequency_hz = instantaneousFrequencyHz(clamped_time);
   result.envelope = current_envelope;
-  result.value = parameters_.amplitude * current_envelope * std::sin(phase_rad);
+  result.value = amplitude * current_envelope * std::sin(phase_rad);
   result.finished = elapsed_s >= parameters_.duration_s;
   return result;
 }

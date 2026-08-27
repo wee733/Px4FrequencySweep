@@ -64,21 +64,35 @@ FrequencySweepMode::FrequencySweepMode(rclcpp::Node& node)
   angular_velocity_ = std::make_shared<px4_ros2::OdometryAngularVelocity>(*this);
   setSetpointUpdateRate(parameters_.mode.update_rate_hz);
 
-  if (parameters_.velocity_integrator.enabled &&
-      !isAccelerationTarget(parameters_.sweep.target)) {
-    RCLCPP_WARN(node.get_logger(),
-                "velocity_integrator.enabled has no effect unless sweep.target is an "
-                "acceleration component");
+  RCLCPP_INFO(node.get_logger(),
+              "Configured '%s': waveform=%s, %.3f..%.3f Hz, duration=%.1f s, "
+              "repetitions=%d per stage, %zu stage(s), update_rate=%.1f Hz",
+              parameters_.mode.name.c_str(), toString(parameters_.sweep.waveform).c_str(),
+              parameters_.sweep.start_frequency_hz, parameters_.sweep.end_frequency_hz,
+              parameters_.sweep.duration_s, parameters_.sweep.repetitions,
+              parameters_.stages.size(), parameters_.mode.update_rate_hz);
+
+  for (std::size_t index = 0; index < parameters_.stages.size(); ++index) {
+    const SweepStage& stage = parameters_.stages[index];
+    RCLCPP_INFO(node.get_logger(), "  stage %zu '%s': target=%s, amplitude=%.3f", index + 1,
+                stage.name.c_str(), toString(stage.target).c_str(), stage.amplitude);
+    const bool any_publish = stage.integrator_publish_enabled[0] ||
+                             stage.integrator_publish_enabled[1] ||
+                             stage.integrator_publish_enabled[2];
+    if (any_publish && !isAccelerationTarget(stage.target)) {
+      RCLCPP_WARN(node.get_logger(),
+                  "    integrator_publish_enabled is set but target '%s' is not an acceleration "
+                  "component, so the integral stays zero",
+                  toString(stage.target).c_str());
+    }
   }
 
+  const float per_stage_s = static_cast<float>(parameters_.sweep.repetitions) *
+                                (parameters_.sweep.duration_s + parameters_.sweep.settle_between_s) +
+                            parameters_.sweep.settle_before_s;
   RCLCPP_INFO(node.get_logger(),
-              "Configured '%s': target=%s, waveform=%s, %.3f..%.3f Hz, amplitude=%.3f, "
-              "duration=%.1f s, repetitions=%d, update_rate=%.1f Hz",
-              parameters_.mode.name.c_str(), toString(parameters_.sweep.target).c_str(),
-              toString(parameters_.sweep.waveform).c_str(),
-              parameters_.sweep.start_frequency_hz, parameters_.sweep.end_frequency_hz,
-              parameters_.sweep.amplitude, parameters_.sweep.duration_s,
-              parameters_.sweep.repetitions, parameters_.mode.update_rate_hz);
+              "Estimated airborne time excluding settling overruns: %.0f s",
+              static_cast<float>(parameters_.stages.size()) * per_stage_s);
   RCLCPP_INFO(node.get_logger(), "PX4 topics resolved under '%s/fmu/...'",
               parameters_.mode.topic_namespace_prefix.c_str());
 }
@@ -111,6 +125,7 @@ void FrequencySweepMode::checkArmingAndRunConditions(
 void FrequencySweepMode::onActivate()
 {
   completion_reported_ = false;
+  stage_index_ = 0;
   repetition_index_ = 0;
   stable_time_s_ = 0.F;
   velocity_integrator_.reset();
@@ -239,19 +254,24 @@ void FrequencySweepMode::updateSetpoint(float dt_s)
     }
 
     case ModePhase::Sweeping: {
-      const SweepSample sample = sweep_generator_.sample(phase_elapsed_s);
+      const SweepSample sample =
+          sweep_generator_.sample(phase_elapsed_s, currentStage().amplitude);
       const TrajectoryCommand command = sweepCommand(sample, bounded_dt_s, phase_elapsed_s);
       publishAndLog(command, sample, phase_elapsed_s);
 
       if (sample.finished) {
         ++repetition_index_;
+        RCLCPP_INFO(node().get_logger(), "Stage '%s' repetition %d/%d complete",
+                    currentStage().name.c_str(), repetition_index_,
+                    parameters_.sweep.repetitions);
         if (repetition_index_ >= parameters_.sweep.repetitions) {
-          finishSuccessfully();
+          if (advanceToNextStageOrFinish()) {
+            velocity_integrator_.reset();
+            transitionTo(ModePhase::SettlingBetweenSweeps);
+          }
         } else {
           velocity_integrator_.reset();
           transitionTo(ModePhase::SettlingBetweenSweeps);
-          RCLCPP_INFO(node().get_logger(), "Sweep repetition %d/%d complete",
-                      repetition_index_, parameters_.sweep.repetitions);
         }
       }
       break;
@@ -279,15 +299,38 @@ void FrequencySweepMode::transitionTo(ModePhase phase)
   stable_time_s_ = 0.F;
 }
 
+const SweepStage& FrequencySweepMode::currentStage() const
+{
+  // stage_index_ is only advanced by advanceToNextStageOrFinish(), which stops at the last stage,
+  // and declareAndLoadParameters() rejects an empty stage list.
+  return parameters_.stages.at(stage_index_);
+}
+
+// Returns true when another stage is queued, false when the whole sequence is done (in which case
+// the mode has already been moved into CompletedHold).
+bool FrequencySweepMode::advanceToNextStageOrFinish()
+{
+  if (stage_index_ + 1 >= parameters_.stages.size()) {
+    finishSuccessfully();
+    return false;
+  }
+  ++stage_index_;
+  repetition_index_ = 0;
+  RCLCPP_INFO(node().get_logger(), "Advancing to stage %zu/%zu: '%s'", stage_index_ + 1,
+              parameters_.stages.size(), currentStage().name.c_str());
+  return true;
+}
+
 void FrequencySweepMode::startSweep()
 {
   velocity_integrator_.reset();
   transitionTo(ModePhase::Sweeping);
   RCLCPP_INFO(node().get_logger(),
-              "Starting sweep repetition %d/%d: %s, %.3f..%.3f Hz, amplitude %.3f",
+              "Starting stage %zu/%zu '%s' repetition %d/%d: %s, %.3f..%.3f Hz, amplitude %.3f",
+              stage_index_ + 1, parameters_.stages.size(), currentStage().name.c_str(),
               repetition_index_ + 1, parameters_.sweep.repetitions,
-              toString(parameters_.sweep.target).c_str(), parameters_.sweep.start_frequency_hz,
-              parameters_.sweep.end_frequency_hz, parameters_.sweep.amplitude);
+              toString(currentStage().target).c_str(), parameters_.sweep.start_frequency_hz,
+              parameters_.sweep.end_frequency_hz, currentStage().amplitude);
 }
 
 void FrequencySweepMode::finishSuccessfully()
@@ -396,116 +439,101 @@ TrajectoryCommand FrequencySweepMode::holdCommand(
 TrajectoryCommand FrequencySweepMode::sweepCommand(const SweepSample& sample, float dt_s,
                                                     float sweep_elapsed_s)
 {
+  const SweepStage& stage = currentStage();
+
   TrajectoryCommand command;
   for (std::size_t axis = 0; axis < 3; ++axis) {
-    if (parameters_.setpoint.position_enabled[axis]) {
+    if (stage.position_enabled[axis]) {
       command.position_ned_m[axis] =
-          reference_position_ned_m_[axis] + parameters_.setpoint.position_offset_ned_m[axis];
+          reference_position_ned_m_[axis] + stage.position_offset_ned_m[axis];
     }
-    if (parameters_.setpoint.velocity_enabled[axis]) {
-      command.velocity_ned_m_s[axis] = parameters_.setpoint.velocity_base_ned_m_s[axis];
+    if (stage.velocity_enabled[axis]) {
+      command.velocity_ned_m_s[axis] = stage.velocity_base_ned_m_s[axis];
     }
-    if (parameters_.setpoint.acceleration_enabled[axis]) {
-      command.acceleration_ned_m_s2[axis] =
-          parameters_.setpoint.acceleration_base_ned_m_s2[axis];
+    if (stage.acceleration_enabled[axis]) {
+      command.acceleration_ned_m_s2[axis] = stage.acceleration_base_ned_m_s2[axis];
     }
   }
-  if (parameters_.setpoint.yaw_enabled) {
-    command.yaw_ned_rad = wrapPi(reference_yaw_ned_rad_ + parameters_.setpoint.yaw_offset_rad);
+  if (stage.yaw_enabled) {
+    command.yaw_ned_rad = wrapPi(reference_yaw_ned_rad_ + stage.yaw_offset_rad);
   }
-  if (parameters_.setpoint.yaw_rate_enabled) {
-    command.yaw_rate_ned_rad_s = parameters_.setpoint.yaw_rate_base_rad_s;
+  if (stage.yaw_rate_enabled) {
+    command.yaw_rate_ned_rad_s = stage.yaw_rate_base_rad_s;
   }
 
   std::array<float, 3> acceleration_excitation{};
-  if (isAccelerationTarget(parameters_.sweep.target)) {
-    if (isHorizontalTarget(parameters_.sweep.target)) {
-      const auto direction =
-          horizontalDirectionNed(parameters_.sweep.target, parameters_.sweep.horizontal_frame,
-                                 reference_yaw_ned_rad_);
+  if (isAccelerationTarget(stage.target)) {
+    if (isHorizontalTarget(stage.target)) {
+      const auto direction = horizontalDirectionNed(
+          stage.target, parameters_.sweep.horizontal_frame, reference_yaw_ned_rad_);
       acceleration_excitation[0] = direction[0] * sample.value;
       acceleration_excitation[1] = direction[1] * sample.value;
     } else {
-      acceleration_excitation[targetAxis(parameters_.sweep.target)] = sample.value;
+      acceleration_excitation[targetAxis(stage.target)] = sample.value;
     }
   }
   const auto& integrated_velocity =
       velocity_integrator_.update(acceleration_excitation, dt_s, sweep_elapsed_s);
+  // The integral is published only where the stage asks for it. An axis can stay velocity-
+  // controlled at its baseline without receiving the excitation integral.
   for (std::size_t axis = 0; axis < 3; ++axis) {
-    if (parameters_.setpoint.velocity_enabled[axis]) {
+    if (stage.velocity_enabled[axis] && stage.integrator_publish_enabled[axis]) {
       command.velocity_ned_m_s[axis] =
-          parameters_.setpoint.velocity_base_ned_m_s[axis] + integrated_velocity[axis];
+          stage.velocity_base_ned_m_s[axis] + integrated_velocity[axis];
     }
   }
 
-  switch (parameters_.sweep.target) {
+  // The excited component is written last so it overrides the baseline set above. In the heading
+  // frame a horizontal excitation is spread over both NED components, so both get rewritten.
+  const bool yaw_target = isYawTarget(stage.target);
+  const std::size_t target_axis = yaw_target ? 0 : targetAxis(stage.target);
+  const bool spread_horizontally = !yaw_target && target_axis < 2 &&
+                                   parameters_.sweep.horizontal_frame == HorizontalFrame::Heading;
+  const std::array<float, 2> direction =
+      spread_horizontally ? horizontalDirectionNed(stage.target,
+                                                   parameters_.sweep.horizontal_frame,
+                                                   reference_yaw_ned_rad_)
+                          : std::array<float, 2>{0.F, 0.F};
+
+  const auto applyExcitation = [&](std::array<std::optional<float>, 3>& values, auto&& baseline) {
+    if (spread_horizontally) {
+      for (std::size_t axis = 0; axis < 2; ++axis) {
+        setComponent(values, axis, baseline(axis) + direction[axis] * sample.value);
+      }
+    } else {
+      setComponent(values, target_axis, baseline(target_axis) + sample.value);
+    }
+  };
+
+  switch (stage.target) {
     case ExcitationTarget::PositionX:
     case ExcitationTarget::PositionY:
-    case ExcitationTarget::PositionZ: {
-      const std::size_t axis = targetAxis(parameters_.sweep.target);
-      if (axis < 2 && parameters_.sweep.horizontal_frame == HorizontalFrame::Heading) {
-        const auto direction = horizontalDirectionNed(
-            parameters_.sweep.target, parameters_.sweep.horizontal_frame,
-            reference_yaw_ned_rad_);
-        for (std::size_t horizontal_axis = 0; horizontal_axis < 2; ++horizontal_axis) {
-          setComponent(command.position_ned_m, horizontal_axis,
-                       reference_position_ned_m_[horizontal_axis] +
-                           parameters_.setpoint.position_offset_ned_m[horizontal_axis] +
-                           direction[horizontal_axis] * sample.value);
-        }
-      } else {
-        setComponent(command.position_ned_m, axis,
-                     reference_position_ned_m_[axis] +
-                         parameters_.setpoint.position_offset_ned_m[axis] + sample.value);
-      }
+    case ExcitationTarget::PositionZ:
+      applyExcitation(command.position_ned_m, [&](std::size_t axis) {
+        return reference_position_ned_m_[axis] + stage.position_offset_ned_m[axis];
+      });
       break;
-    }
     case ExcitationTarget::VelocityX:
     case ExcitationTarget::VelocityY:
-    case ExcitationTarget::VelocityZ: {
-      const std::size_t axis = targetAxis(parameters_.sweep.target);
-      if (axis < 2 && parameters_.sweep.horizontal_frame == HorizontalFrame::Heading) {
-        const auto direction = horizontalDirectionNed(
-            parameters_.sweep.target, parameters_.sweep.horizontal_frame,
-            reference_yaw_ned_rad_);
-        for (std::size_t horizontal_axis = 0; horizontal_axis < 2; ++horizontal_axis) {
-          setComponent(command.velocity_ned_m_s, horizontal_axis,
-                       parameters_.setpoint.velocity_base_ned_m_s[horizontal_axis] +
-                           integrated_velocity[horizontal_axis] +
-                           direction[horizontal_axis] * sample.value);
-        }
-      } else {
-        setComponent(command.velocity_ned_m_s, axis,
-                     parameters_.setpoint.velocity_base_ned_m_s[axis] +
-                         integrated_velocity[axis] + sample.value);
-      }
+    case ExcitationTarget::VelocityZ:
+      applyExcitation(command.velocity_ned_m_s, [&](std::size_t axis) {
+        return stage.velocity_base_ned_m_s[axis] +
+               (stage.integrator_publish_enabled[axis] ? integrated_velocity[axis] : 0.F);
+      });
       break;
-    }
     case ExcitationTarget::AccelerationX:
     case ExcitationTarget::AccelerationY:
-    case ExcitationTarget::AccelerationZ: {
-      const std::size_t axis = targetAxis(parameters_.sweep.target);
-      if (axis < 2 && parameters_.sweep.horizontal_frame == HorizontalFrame::Heading) {
-        const auto direction = horizontalDirectionNed(
-            parameters_.sweep.target, parameters_.sweep.horizontal_frame,
-            reference_yaw_ned_rad_);
-        for (std::size_t horizontal_axis = 0; horizontal_axis < 2; ++horizontal_axis) {
-          setComponent(command.acceleration_ned_m_s2, horizontal_axis,
-                       parameters_.setpoint.acceleration_base_ned_m_s2[horizontal_axis] +
-                           direction[horizontal_axis] * sample.value);
-        }
-      } else {
-        setComponent(command.acceleration_ned_m_s2, axis,
-                     parameters_.setpoint.acceleration_base_ned_m_s2[axis] + sample.value);
-      }
+    case ExcitationTarget::AccelerationZ:
+      applyExcitation(command.acceleration_ned_m_s2, [&](std::size_t axis) {
+        return stage.acceleration_base_ned_m_s2[axis];
+      });
       break;
-    }
     case ExcitationTarget::Yaw:
-      command.yaw_ned_rad = wrapPi(reference_yaw_ned_rad_ +
-                                        parameters_.setpoint.yaw_offset_rad + sample.value);
+      command.yaw_ned_rad =
+          wrapPi(reference_yaw_ned_rad_ + stage.yaw_offset_rad + sample.value);
       break;
     case ExcitationTarget::YawRate:
-      command.yaw_rate_ned_rad_s = parameters_.setpoint.yaw_rate_base_rad_s + sample.value;
+      command.yaw_rate_ned_rad_s = stage.yaw_rate_base_rad_s + sample.value;
       break;
   }
 
@@ -540,8 +568,8 @@ void FrequencySweepMode::publishAndLog(const TrajectoryCommand& command,
 {
   publish(command);
   if (csv_logger_.isOpen() && telemetryValid()) {
-    csv_logger_.write(node().get_clock()->now().seconds(), phase_, repetition_index_,
-                      phase_elapsed_s, sample, command, telemetrySnapshot());
+    csv_logger_.write(node().get_clock()->now().seconds(), phase_, currentStage(),
+                      repetition_index_, phase_elapsed_s, sample, command, telemetrySnapshot());
   }
 }
 

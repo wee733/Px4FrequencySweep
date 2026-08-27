@@ -1,9 +1,7 @@
 # PX4 Frequency Sweep（中文说明）
 
 这是一个基于官方 `px4_ros2_interface_lib` 的 PX4 ROS 2 外部飞行模式。它使用
-`TrajectorySetpointType` 完成扫频实验，不依赖 MAVROS，也不会切换到 Offboard。
-
-## 设计边界
+`TrajectorySetpointType` 完成扫频实验。
 
 节点启动后会向 PX4 动态注册 **Frequency Sweep**。无人机应先在 Position/Hold 中完成
 起飞和悬停，再由飞手通过 RC 或 QGC 选择该模式。此模式不负责解锁、起飞、降落或切换其他
@@ -27,66 +25,8 @@
 
 ## 最重要的配置
 
-完整配置见 [`config/frequency_sweep.yaml`](config/frequency_sweep.yaml)。建议复制一份作为
-具体无人机的配置，不要直接把不同飞机的参数混在同一个文件中。
+完整配置见 [`config/frequency_sweep.yaml`](config/frequency_sweep.yaml)。
 
-### 扫什么
-
-```yaml
-sweep.target: "acceleration_y"
-```
-
-可选值：
-
-```text
-position_x/y/z
-velocity_x/y/z
-acceleration_x/y/z
-yaw
-yaw_rate
-```
-
-幅值单位随 target 改变，分别是 m、m/s、m/s²、rad、rad/s。
-
-水平 X/Y 默认是 NED 的 North/East：
-
-```yaml
-sweep.horizontal_frame: "ned"
-```
-
-若希望 X/Y 表示激活时机头的前向/右向，可设置：
-
-```yaml
-sweep.horizontal_frame: "heading"
-```
-
-代码会使用激活时 yaw 把水平激励旋转到 NED。
-
-### 水平速度约束
-
-默认配置是：
-
-```yaml
-setpoint.velocity_enabled: [true, true, true]
-```
-
-PX4 要求水平 X/Y 设定值成对有效。扫 `acceleration_y` 时，Y 速度使用加速度的泄漏积分，
-X 速度使用配置的零基线来限制漂移；扫 `acceleration_x` 时反过来。这样保留了 ROS 1
-代码“激励轴允许运动、正交轴命令零速度”的意图，同时不会产生一轴有限、一轴 `NaN` 的非法组合。
-
-位置、速度、加速度的每个基线/辅助分量都能分别开关：
-
-```yaml
-setpoint.position_enabled: [false, false, false]
-setpoint.velocity_enabled: [true, true, true]
-setpoint.acceleration_enabled: [true, true, true]
-setpoint.yaw_enabled: true
-setpoint.yaw_rate_enabled: false
-```
-
-被选为 `sweep.target` 的分量会始终发送，因为它就是实验输入。例如即使
-`setpoint.velocity_enabled[0]` 为 `false`，选择 `velocity_x` 扫频时仍会发送 X 速度扫频。
-自定义配置时仍应确保所有水平 X/Y 项成对有效或成对为 `NaN`。
 
 ### 初始化位置
 

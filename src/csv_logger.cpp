@@ -46,9 +46,8 @@ bool CsvLogger::open(const FrequencySweepParameters& parameters,
 
   try {
     std::filesystem::create_directories(parameters.logging.directory);
-    const std::string filename =
-        "frequency_sweep_" + toString(parameters.sweep.target) + "_" +
-        timestampForFilename() + ".csv";
+    // One file per run covers every stage; the 'stage' column separates them.
+    const std::string filename = "frequency_sweep_" + timestampForFilename() + ".csv";
     path_ = (std::filesystem::path(parameters.logging.directory) / filename).string();
     stream_.open(path_, std::ios::out | std::ios::trunc);
   } catch (const std::exception& exception) {
@@ -66,19 +65,22 @@ bool CsvLogger::open(const FrequencySweepParameters& parameters,
   stream_ << std::setprecision(9);
   stream_ << "# mode_name=" << parameters.mode.name << '\n';
   stream_ << "# update_rate_hz=" << parameters.mode.update_rate_hz << '\n';
-  stream_ << "# target=" << toString(parameters.sweep.target) << '\n';
   stream_ << "# horizontal_frame=" << toString(parameters.sweep.horizontal_frame) << '\n';
   stream_ << "# waveform=" << toString(parameters.sweep.waveform) << '\n';
   stream_ << "# start_frequency_hz=" << parameters.sweep.start_frequency_hz << '\n';
   stream_ << "# end_frequency_hz=" << parameters.sweep.end_frequency_hz << '\n';
-  stream_ << "# amplitude=" << parameters.sweep.amplitude << '\n';
   stream_ << "# duration_s=" << parameters.sweep.duration_s << '\n';
-  stream_ << "# repetitions=" << parameters.sweep.repetitions << '\n';
+  stream_ << "# repetitions_per_stage=" << parameters.sweep.repetitions << '\n';
+  for (const SweepStage& stage : parameters.stages) {
+    stream_ << "# stage=" << stage.name << " target=" << toString(stage.target)
+            << " amplitude=" << stage.amplitude << '\n';
+  }
   stream_ << "# reference_position_ned_m=";
   writeArray(stream_, reference_position_ned_m);
   stream_ << '\n';
   stream_ << "# reference_yaw_ned_rad=" << reference_yaw_ned_rad << '\n';
-  stream_ << "ros_time_s,phase,repetition,phase_elapsed_s,sweep_frequency_hz,sweep_envelope,"
+  stream_ << "ros_time_s,phase,stage,target,repetition,phase_elapsed_s,sweep_frequency_hz,"
+             "sweep_envelope,"
              "sweep_value,sp_position_x,sp_position_y,sp_position_z,sp_velocity_x,"
              "sp_velocity_y,sp_velocity_z,sp_acceleration_x,sp_acceleration_y,"
              "sp_acceleration_z,sp_yaw,sp_yaw_rate,position_x,position_y,position_z,"
@@ -88,17 +90,18 @@ bool CsvLogger::open(const FrequencySweepParameters& parameters,
   return true;
 }
 
-void CsvLogger::write(double ros_time_s, ModePhase phase, int repetition_index,
-                      float phase_elapsed_s, const SweepSample& sweep,
+void CsvLogger::write(double ros_time_s, ModePhase phase, const SweepStage& stage,
+                      int repetition_index, float phase_elapsed_s, const SweepSample& sweep,
                       const TrajectoryCommand& command, const TelemetrySnapshot& telemetry)
 {
   if (!stream_.is_open()) {
     return;
   }
 
-  stream_ << ros_time_s << ',' << toString(phase) << ',' << repetition_index + 1 << ','
-          << phase_elapsed_s << ',' << sweep.instantaneous_frequency_hz << ',' << sweep.envelope
-          << ',' << sweep.value;
+  stream_ << ros_time_s << ',' << toString(phase) << ',' << stage.name << ','
+          << toString(stage.target) << ',' << repetition_index + 1 << ',' << phase_elapsed_s
+          << ',' << sweep.instantaneous_frequency_hz << ',' << sweep.envelope << ','
+          << sweep.value;
   for (const auto& value : command.position_ned_m) stream_ << ',' << optionalOrNan(value);
   for (const auto& value : command.velocity_ned_m_s) stream_ << ',' << optionalOrNan(value);
   for (const auto& value : command.acceleration_ned_m_s2) stream_ << ',' << optionalOrNan(value);

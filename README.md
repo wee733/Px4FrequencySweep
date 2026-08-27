@@ -2,7 +2,9 @@
 
 A configurable PX4 ROS 2 external flight mode for frequency-sweep experiments. The mode is built
 on the official [`px4_ros2_interface_lib`](https://github.com/Auterion/px4-ros2-interface-lib)
-and uses `TrajectorySetpointType`; it does not use MAVROS and does not switch PX4 into Offboard.
+and uses `TrajectorySetpointType`.
+
+it based on https://github.com/xuhao1/pyAircraftIden.git
 
 [中文说明](README.zh-CN.md)
 
@@ -31,8 +33,7 @@ pilot/GCS or to a future `ModeExecutor`.
 
 ## Supported excitation targets
 
-The `sweep.target` parameter exposes every field supported by the library's flexible trajectory
-setpoint:
+Each stage's `target` selects one field of the trajectory setpoint:
 
 | Target | Amplitude unit | PX4 control layer |
 |---|---:|---|
@@ -109,27 +110,38 @@ Copy [`config/frequency_sweep.yaml`](config/frequency_sweep.yaml) to a vehicle-s
 edit that copy. Parameters are validated at startup; an invalid frequency range, array length, or
 sample-rate combination prevents the node from registering.
 
-### Horizontal velocity pairing
+### Stages
 
-PX4 expects horizontal X/Y setpoint components to be valid as a pair. The default therefore uses:
+`sweep.sequence` names the stages to fly, in order. Each stage carries its own excitation target,
+amplitude, and setpoint profile, because the legacy ROS 1 script used a different `type_mask` per
+axis rather than one shared profile:
 
 ```yaml
-setpoint.velocity_enabled: [true, true, true]
+sweep.sequence: ["roll", "pitch", "yaw"]
+
+stages.roll.target: "acceleration_y"
+stages.roll.amplitude: 3.0
+stages.roll.velocity_enabled: [true, true, true]
+stages.roll.integrator_publish_enabled: [false, true, false]
 ```
 
-During an `acceleration_y` sweep, Y receives the leaky integral of the excitation and X receives its
-configured zero baseline. An `acceleration_x` sweep uses the opposite mapping. This preserves the
-legacy intent of allowing motion on the excited axis while constraining drift on the orthogonal
-axis, without producing a split finite/`NaN` horizontal pair.
+`sweep.repetitions` applies per stage, so the shipped default flies 3 axes × 3 repetitions in one
+activation. Every stage writes to the same CSV; the `stage` and `target` columns separate them.
 
-Every position, velocity, and acceleration component has a separate enable flag. Disabled
-components become `NaN`; they are not silently filled with zero. The selected sweep target is
-always enabled because it is the experiment input.
+`velocity_enabled` decides whether an axis is velocity-controlled at all;
+`integrator_publish_enabled` decides which axes carry the acceleration integral. Keeping these
+separate is what lets the roll stage pin `VX` to 0 while `VY` follows the excitation integral.
 
-When creating a vehicle-specific configuration, keep each horizontal X/Y term either valid as a
-pair or `NaN` as a pair. The legacy pitch run wrote an integrated X velocity but masked both X and Y
-velocity fields, so that written X value was not effective; the reusable default deliberately fixes
-that inconsistency instead of reproducing it.
+### Horizontal pairing
+
+PX4's `PositionControl::_inputValid()` rejects the **entire** `TrajectorySetpoint` unless the X and
+Y components of each of position, velocity, and acceleration are either both finite or both `NaN`,
+and unless every axis carries at least one finite setpoint. A split pair does not degrade
+gracefully — the setpoint is dropped and PX4 falls back to its own failsafe.
+
+Startup validation enforces both rules per stage, so a bad profile is a launch error rather than a
+mid-flight failsafe. All three shipped stages keep their pairs intact: roll has both horizontal
+velocities finite, pitch and yaw have both unset.
 
 ### Initial hover reference
 
@@ -161,9 +173,12 @@ The node requires:
 mode.update_rate_hz >= sweep.end_frequency_hz × sweep.minimum_samples_per_cycle
 ```
 
-The default is 100 Hz, 5 Hz, and 10 samples/cycle. Increasing the ROS 2 publication rate does not
-increase the internal PX4 controller rate, so verify the effective timestamps in ULog before using
-a high maximum frequency.
+The ROS 1-aligned default is 150 Hz, 20 Hz, and 7.5 samples/cycle — exactly at the limit, which is
+what 150 Hz over a 0.1–20 Hz band gives.
+
+Raising the ROS 2 publication rate does not raise PX4's internal controller rate, so the setpoint
+PX4 actually applies is resampled at whatever rate `mc_pos_control` runs. Take the excitation and
+response from the ULog rather than from this node's CSV, so both sit on PX4's own clock.
 
 ### Acceleration-to-velocity integration
 
@@ -177,7 +192,14 @@ velocity_integrator.leak_time_constant_s: 1.33
 velocity_integrator.max_abs_velocity_m_s: 3.0
 ```
 
-Integrated velocity is published only on axes enabled by `setpoint.velocity_enabled`.
+`leak_time_constant_s: 1.33` is the ROS 1 leak expressed rate-independently: that script applied
+`alpha = 0.995` at 150 Hz, i.e. `tau = -dt/ln(alpha) = 1.33 s`. Its comment claimed a 0.008 Hz
+corner, but the real corner is `1/(2*pi*tau) = 0.12 Hz` — above the 0.1 Hz start frequency, so the
+integrator attenuates and phase-shifts the bottom of the sweep. That is inherited behaviour, not a
+new choice.
+
+The integral reaches only axes where **both** `velocity_enabled` and `integrator_publish_enabled`
+are set for that axis.
 
 ## Run in SITL
 
@@ -269,11 +291,22 @@ set.
 
 ## Differences from the legacy ROS 1 script
 
-See [`docs/migration_from_ros1.md`](docs/migration_from_ros1.md) for the exact behavior mapping.
-Important changes include dynamic PX4 mode registration, NED-native fields, configurable component
-masks, correct chirp phase integration, rate-independent velocity leakage, and failure-to-hold
-behavior. Offline frequency-response fitting is intentionally kept separate from the flight-mode
-process.
+The shipped configuration reproduces the legacy experiment: three axes in one flight, 3 repetitions
+each, 0.1–20 Hz over 60 s at 150 Hz, amplitude 3.0 m/s² (0.9 rad on yaw), no fade, yaw locked to 0,
+and the same per-axis setpoint profiles.
+
+**One deliberate difference.** The ROS 1 chirp computed its phase as `sin(2π·f(t)·t)` with `f(t)`
+ramping linearly. That multiplies the ramped frequency by `t` instead of integrating it, so the
+instantaneous frequency was `f_min + 2(f_max−f_min)·t/T` — the sweep actually reached **39.9 Hz**,
+twice its nominal 20 Hz, and the frequency logged alongside each sample was wrong. This is a defect,
+not a design choice, so the phase here is integrated properly and the sweep really ends at 20 Hz.
+Archived ROS 1 data is therefore not sample-for-sample comparable with a ROS 2 run.
+
+Structural changes: dynamic PX4 mode registration, NED-native fields, per-stage setpoint profiles,
+startup validation of PX4's horizontal pairing rule, rate-independent velocity leakage, and
+failure-to-hold behaviour. Offline frequency-response fitting stays outside the flight-mode process.
+
+See [`docs/migration_from_ros1.md`](docs/migration_from_ros1.md) for the full mapping.
 
 ## Tests
 

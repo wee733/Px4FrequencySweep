@@ -17,7 +17,8 @@ class SweepGenerator {
  public:
   explicit SweepGenerator(SweepParameters parameters);
 
-  SweepSample sample(float elapsed_s) const;
+  // Amplitude is per-stage, so it is passed in rather than stored.
+  SweepSample sample(float elapsed_s, float amplitude) const;
 
  private:
   float phaseRad(float elapsed_s) const;

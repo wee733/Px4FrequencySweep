@@ -12,6 +12,10 @@ namespace px4_frequency_sweep {
 
 px4_ros2::ModeBase::Settings declareModeSettings(rclcpp::Node& node);
 
+bool isPositionTarget(ExcitationTarget target);
+bool isVelocityTarget(ExcitationTarget target);
+bool isYawTarget(ExcitationTarget target);
+
 // Declares 'px4_topic_namespace_prefix' and returns it normalised to an absolute prefix
 // without a trailing slash. Empty means the stock '/fmu/...' topics, which is what a real
 // vehicle uses; a simulator that namespaces its uXRCE-DDS client needs e.g. "/drone0".

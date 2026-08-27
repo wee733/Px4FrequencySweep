@@ -20,8 +20,8 @@ class CsvLogger {
   bool open(const FrequencySweepParameters& parameters,
             const std::array<float, 3>& reference_position_ned_m, float reference_yaw_ned_rad,
             std::string& error);
-  void write(double ros_time_s, ModePhase phase, int repetition_index, float phase_elapsed_s,
-             const SweepSample& sweep, const TrajectoryCommand& command,
+  void write(double ros_time_s, ModePhase phase, const SweepStage& stage, int repetition_index,
+             float phase_elapsed_s, const SweepSample& sweep, const TrajectoryCommand& command,
              const TelemetrySnapshot& telemetry);
   void close();
 

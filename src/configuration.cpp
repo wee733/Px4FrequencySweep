@@ -88,6 +88,119 @@ void requireFinite(const std::string& name, const std::array<float, 3>& values)
   }
 }
 
+// PX4's PositionControl::_inputValid() rejects the whole TrajectorySetpoint unless the X and Y
+// components of each of position, velocity and acceleration are either both finite or both NaN,
+// and unless every axis carries at least one finite setpoint. Catching that here turns a
+// mid-flight failsafe into a startup error.
+void requireHorizontalPairing(const std::string& stage_name, const std::string& field,
+                              const std::array<bool, 3>& enabled)
+{
+  if (enabled[0] != enabled[1]) {
+    throw std::invalid_argument(
+        "stages." + stage_name + "." + field +
+        " must enable X and Y together: PX4 requires the horizontal components of each "
+        "TrajectorySetpoint field to be valid or NaN in pairs, and rejects the entire setpoint "
+        "otherwise");
+  }
+}
+
+// Reads sweep.sequence, then declares stages.<name>.* for each entry. Stage names come from a
+// parameter, so the per-stage parameters cannot be declared up front.
+std::vector<SweepStage> declareStages(rclcpp::Node& node)
+{
+  const auto sequence =
+      node.declare_parameter<std::vector<std::string>>("sweep.sequence", std::vector<std::string>{});
+  if (sequence.empty()) {
+    throw std::invalid_argument(
+        "sweep.sequence must list at least one stage name, e.g. [\"roll\", \"pitch\", \"yaw\"]");
+  }
+
+  std::vector<SweepStage> stages;
+  stages.reserve(sequence.size());
+  for (const std::string& name : sequence) {
+    if (name.empty()) {
+      throw std::invalid_argument("sweep.sequence contains an empty stage name");
+    }
+    const std::string prefix = "stages." + name + ".";
+    SweepStage stage;
+    stage.name = name;
+
+    stage.target = excitationTargetFromString(
+        node.declare_parameter<std::string>(prefix + "target", toString(stage.target)));
+    stage.amplitude = declareFloat(node, prefix + "amplitude", stage.amplitude);
+
+    stage.position_enabled =
+        declareBoolArray3(node, prefix + "position_enabled", stage.position_enabled);
+    stage.velocity_enabled =
+        declareBoolArray3(node, prefix + "velocity_enabled", stage.velocity_enabled);
+    stage.acceleration_enabled =
+        declareBoolArray3(node, prefix + "acceleration_enabled", stage.acceleration_enabled);
+    stage.integrator_publish_enabled = declareBoolArray3(
+        node, prefix + "integrator_publish_enabled", stage.integrator_publish_enabled);
+    stage.yaw_enabled = node.declare_parameter<bool>(prefix + "yaw_enabled", stage.yaw_enabled);
+    stage.yaw_rate_enabled =
+        node.declare_parameter<bool>(prefix + "yaw_rate_enabled", stage.yaw_rate_enabled);
+
+    stage.position_offset_ned_m =
+        declareFloatArray3(node, prefix + "position_offset_ned_m", stage.position_offset_ned_m);
+    stage.velocity_base_ned_m_s =
+        declareFloatArray3(node, prefix + "velocity_base_ned_m_s", stage.velocity_base_ned_m_s);
+    stage.acceleration_base_ned_m_s2 = declareFloatArray3(
+        node, prefix + "acceleration_base_ned_m_s2", stage.acceleration_base_ned_m_s2);
+    stage.yaw_offset_rad = declareFloat(node, prefix + "yaw_offset_rad", stage.yaw_offset_rad);
+    stage.yaw_rate_base_rad_s =
+        declareFloat(node, prefix + "yaw_rate_base_rad_s", stage.yaw_rate_base_rad_s);
+
+    stages.push_back(std::move(stage));
+  }
+  return stages;
+}
+
+void validateStage(const SweepStage& stage)
+{
+  const std::string& name = stage.name;
+  requireFinite("stages." + name + ".amplitude", stage.amplitude);
+
+  requireHorizontalPairing(name, "position_enabled", stage.position_enabled);
+  requireHorizontalPairing(name, "velocity_enabled", stage.velocity_enabled);
+  requireHorizontalPairing(name, "acceleration_enabled", stage.acceleration_enabled);
+
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    if (!stage.position_enabled[axis] && !stage.velocity_enabled[axis] &&
+        !stage.acceleration_enabled[axis]) {
+      throw std::invalid_argument("stages." + name + " leaves axis " + std::to_string(axis) +
+                                  " with no setpoint; PX4 requires at least one of position, "
+                                  "velocity or acceleration per axis");
+    }
+    if (stage.integrator_publish_enabled[axis] && !stage.velocity_enabled[axis]) {
+      throw std::invalid_argument("stages." + name + ".integrator_publish_enabled[" +
+                                  std::to_string(axis) +
+                                  "] requires velocity_enabled on the same axis");
+    }
+  }
+
+  // The excitation has to reach a field PX4 will actually read.
+  const bool target_published =
+      isYawTarget(stage.target)
+          ? (stage.target == ExcitationTarget::Yaw ? stage.yaw_enabled : stage.yaw_rate_enabled)
+          : (isPositionTarget(stage.target) ? stage.position_enabled[targetAxis(stage.target)]
+             : isVelocityTarget(stage.target)
+                 ? stage.velocity_enabled[targetAxis(stage.target)]
+                 : stage.acceleration_enabled[targetAxis(stage.target)]);
+  if (!target_published) {
+    throw std::invalid_argument("stages." + name + " excites '" + toString(stage.target) +
+                                "' but the matching setpoint component is disabled, so the "
+                                "excitation would never be published");
+  }
+
+  requireFinite("stages." + name + ".position_offset_ned_m", stage.position_offset_ned_m);
+  requireFinite("stages." + name + ".velocity_base_ned_m_s", stage.velocity_base_ned_m_s);
+  requireFinite("stages." + name + ".acceleration_base_ned_m_s2",
+                stage.acceleration_base_ned_m_s2);
+  requireFinite("stages." + name + ".yaw_offset_rad", stage.yaw_offset_rad);
+  requireFinite("stages." + name + ".yaw_rate_base_rad_s", stage.yaw_rate_base_rad_s);
+}
+
 void validate(const FrequencySweepParameters& parameters)
 {
   if (parameters.mode.name.empty() || parameters.mode.name.size() >= 25) {
@@ -100,19 +213,18 @@ void validate(const FrequencySweepParameters& parameters)
   requireFinite("reference.configured_yaw_ned_rad", parameters.reference.configured_yaw_ned_rad);
   requirePositive("reference.max_initial_offset_m", parameters.reference.max_initial_offset_m);
 
-  requireFinite("setpoint.position_offset_ned_m", parameters.setpoint.position_offset_ned_m);
-  requireFinite("setpoint.velocity_base_ned_m_s", parameters.setpoint.velocity_base_ned_m_s);
-  requireFinite("setpoint.acceleration_base_ned_m_s2",
-                parameters.setpoint.acceleration_base_ned_m_s2);
-  requireFinite("setpoint.yaw_offset_rad", parameters.setpoint.yaw_offset_rad);
-  requireFinite("setpoint.yaw_rate_base_rad_s", parameters.setpoint.yaw_rate_base_rad_s);
+  if (parameters.stages.empty()) {
+    throw std::invalid_argument("sweep.sequence must name at least one stage");
+  }
+  for (const SweepStage& stage : parameters.stages) {
+    validateStage(stage);
+  }
 
   requirePositive("sweep.start_frequency_hz", parameters.sweep.start_frequency_hz);
   requirePositive("sweep.end_frequency_hz", parameters.sweep.end_frequency_hz);
   if (parameters.sweep.end_frequency_hz < parameters.sweep.start_frequency_hz) {
     throw std::invalid_argument("sweep.end_frequency_hz must be >= sweep.start_frequency_hz");
   }
-  requireFinite("sweep.amplitude", parameters.sweep.amplitude);
   requirePositive("sweep.duration_s", parameters.sweep.duration_s);
   requireFinite("sweep.phase_offset_rad", parameters.sweep.phase_offset_rad);
   requireNonNegative("sweep.fade_in_s", parameters.sweep.fade_in_s);
@@ -211,30 +323,8 @@ FrequencySweepParameters declareAndLoadParameters(rclcpp::Node& node)
   parameters.reference.max_initial_offset_m = declareFloat(
       node, "reference.max_initial_offset_m", parameters.reference.max_initial_offset_m);
 
-  parameters.setpoint.position_enabled = declareBoolArray3(
-      node, "setpoint.position_enabled", parameters.setpoint.position_enabled);
-  parameters.setpoint.velocity_enabled = declareBoolArray3(
-      node, "setpoint.velocity_enabled", parameters.setpoint.velocity_enabled);
-  parameters.setpoint.acceleration_enabled = declareBoolArray3(
-      node, "setpoint.acceleration_enabled", parameters.setpoint.acceleration_enabled);
-  parameters.setpoint.yaw_enabled =
-      node.declare_parameter<bool>("setpoint.yaw_enabled", parameters.setpoint.yaw_enabled);
-  parameters.setpoint.yaw_rate_enabled = node.declare_parameter<bool>(
-      "setpoint.yaw_rate_enabled", parameters.setpoint.yaw_rate_enabled);
-  parameters.setpoint.position_offset_ned_m = declareFloatArray3(
-      node, "setpoint.position_offset_ned_m", parameters.setpoint.position_offset_ned_m);
-  parameters.setpoint.velocity_base_ned_m_s = declareFloatArray3(
-      node, "setpoint.velocity_base_ned_m_s", parameters.setpoint.velocity_base_ned_m_s);
-  parameters.setpoint.acceleration_base_ned_m_s2 = declareFloatArray3(
-      node, "setpoint.acceleration_base_ned_m_s2",
-      parameters.setpoint.acceleration_base_ned_m_s2);
-  parameters.setpoint.yaw_offset_rad =
-      declareFloat(node, "setpoint.yaw_offset_rad", parameters.setpoint.yaw_offset_rad);
-  parameters.setpoint.yaw_rate_base_rad_s = declareFloat(
-      node, "setpoint.yaw_rate_base_rad_s", parameters.setpoint.yaw_rate_base_rad_s);
+  parameters.stages = declareStages(node);
 
-  parameters.sweep.target = excitationTargetFromString(node.declare_parameter<std::string>(
-      "sweep.target", toString(parameters.sweep.target)));
   parameters.sweep.horizontal_frame = horizontalFrameFromString(
       node.declare_parameter<std::string>("sweep.horizontal_frame",
                                           toString(parameters.sweep.horizontal_frame)));
@@ -244,8 +334,6 @@ FrequencySweepParameters declareAndLoadParameters(rclcpp::Node& node)
       node, "sweep.start_frequency_hz", parameters.sweep.start_frequency_hz);
   parameters.sweep.end_frequency_hz =
       declareFloat(node, "sweep.end_frequency_hz", parameters.sweep.end_frequency_hz);
-  parameters.sweep.amplitude =
-      declareFloat(node, "sweep.amplitude", parameters.sweep.amplitude);
   parameters.sweep.duration_s =
       declareFloat(node, "sweep.duration_s", parameters.sweep.duration_s);
   parameters.sweep.phase_offset_rad =
@@ -403,6 +491,23 @@ bool isAccelerationTarget(ExcitationTarget target)
   return target == ExcitationTarget::AccelerationX ||
          target == ExcitationTarget::AccelerationY ||
          target == ExcitationTarget::AccelerationZ;
+}
+
+bool isPositionTarget(ExcitationTarget target)
+{
+  return target == ExcitationTarget::PositionX || target == ExcitationTarget::PositionY ||
+         target == ExcitationTarget::PositionZ;
+}
+
+bool isVelocityTarget(ExcitationTarget target)
+{
+  return target == ExcitationTarget::VelocityX || target == ExcitationTarget::VelocityY ||
+         target == ExcitationTarget::VelocityZ;
+}
+
+bool isYawTarget(ExcitationTarget target)
+{
+  return target == ExcitationTarget::Yaw || target == ExcitationTarget::YawRate;
 }
 
 std::size_t targetAxis(ExcitationTarget target)

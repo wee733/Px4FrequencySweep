@@ -38,6 +38,9 @@ class FrequencySweepMode : public px4_ros2::ModeBase {
   bool referenceReached() const;
   std::optional<std::string> safetyViolation() const;
 
+  const SweepStage& currentStage() const;
+  bool advanceToNextStageOrFinish();
+
   TrajectoryCommand holdCommand(const std::array<float, 3>& position_ned_m,
                                 float yaw_ned_rad) const;
   TrajectoryCommand sweepCommand(const SweepSample& sample, float dt_s,
@@ -65,6 +68,7 @@ class FrequencySweepMode : public px4_ros2::ModeBase {
   rclcpp::Time phase_start_time_{};
   rclcpp::Time last_safety_warning_time_{};
   float stable_time_s_{0.F};
+  std::size_t stage_index_{0};
   int repetition_index_{0};
   bool completion_reported_{false};
   bool reference_initialized_{false};

@@ -24,15 +24,14 @@ void testLinearSweep()
   parameters.start_frequency_hz = 1.F;
   parameters.end_frequency_hz = 5.F;
   parameters.duration_s = 4.F;
-  parameters.amplitude = 2.F;
-  parameters.fade_in_s = 0.F;
+    parameters.fade_in_s = 0.F;
   parameters.fade_out_s = 0.F;
 
   const px4_frequency_sweep::SweepGenerator generator(parameters);
-  require(near(generator.sample(0.F).instantaneous_frequency_hz, 1.F));
-  require(near(generator.sample(2.F).instantaneous_frequency_hz, 3.F));
-  require(near(generator.sample(4.F).instantaneous_frequency_hz, 5.F));
-  require(generator.sample(4.F).finished);
+  require(near(generator.sample(0.F, 1.F).instantaneous_frequency_hz, 1.F));
+  require(near(generator.sample(2.F, 1.F).instantaneous_frequency_hz, 3.F));
+  require(near(generator.sample(4.F, 1.F).instantaneous_frequency_hz, 5.F));
+  require(generator.sample(4.F, 1.F).finished);
 }
 
 void testFadeEnvelope()
@@ -45,10 +44,25 @@ void testFadeEnvelope()
   parameters.fade_out_s = 2.F;
 
   const px4_frequency_sweep::SweepGenerator generator(parameters);
-  require(near(generator.sample(0.F).envelope, 0.F));
-  require(near(generator.sample(1.F).envelope, 0.5F));
-  require(near(generator.sample(5.F).envelope, 1.F));
-  require(near(generator.sample(10.F).envelope, 0.F));
+  require(near(generator.sample(0.F, 1.F).envelope, 0.F));
+  require(near(generator.sample(1.F, 1.F).envelope, 0.5F));
+  require(near(generator.sample(5.F, 1.F).envelope, 1.F));
+  require(near(generator.sample(10.F, 1.F).envelope, 0.F));
+}
+
+// Amplitude is per-stage and passed in, so the same generator must scale two stages differently.
+void testAmplitudeIsPerCall()
+{
+  px4_frequency_sweep::SweepParameters parameters;
+  parameters.start_frequency_hz = 1.F;
+  parameters.end_frequency_hz = 1.F;
+  parameters.duration_s = 10.F;
+  parameters.fade_in_s = 0.F;
+  parameters.fade_out_s = 0.F;
+  // sin(2*pi*1*0.25) = 1, so the sample equals the amplitude at t = 0.25 s.
+  const px4_frequency_sweep::SweepGenerator generator(parameters);
+  require(near(generator.sample(0.25F, 3.F).value, 3.F));
+  require(near(generator.sample(0.25F, 0.9F).value, 0.9F));
 }
 
 void testLogarithmicSweep()
@@ -62,9 +76,9 @@ void testLogarithmicSweep()
   parameters.fade_out_s = 0.F;
 
   const px4_frequency_sweep::SweepGenerator generator(parameters);
-  require(near(generator.sample(0.F).instantaneous_frequency_hz, 1.F));
-  require(near(generator.sample(4.F).instantaneous_frequency_hz, 4.F));
-  require(near(generator.sample(8.F).instantaneous_frequency_hz, 16.F));
+  require(near(generator.sample(0.F, 1.F).instantaneous_frequency_hz, 1.F));
+  require(near(generator.sample(4.F, 1.F).instantaneous_frequency_hz, 4.F));
+  require(near(generator.sample(8.F, 1.F).instantaneous_frequency_hz, 16.F));
 }
 
 void testLeakyVelocityIntegrator()
@@ -113,6 +127,7 @@ int main()
 {
   testLinearSweep();
   testFadeEnvelope();
+  testAmplitudeIsPerCall();
   testLogarithmicSweep();
   testLeakyVelocityIntegrator();
   testIntegratorIsRateIndependent();
