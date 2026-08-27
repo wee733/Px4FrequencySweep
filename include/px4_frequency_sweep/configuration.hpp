@@ -35,4 +35,10 @@ std::string toString(HorizontalFrame frame);
 bool isAccelerationTarget(ExcitationTarget target);
 std::size_t targetAxis(ExcitationTarget target);
 
+// Rotational axis index used by the identification tooling: 0=roll, 1=pitch, 2=yaw, 3=thrust.
+// This is NOT targetAxis(): that returns the NED translational axis (X=0, Y=1, Z=2). A Y
+// acceleration excites roll, so targetAxis()==1 but sysidAxis()==0. Returns -1 for targets that
+// do not map onto a single rotational axis (horizontal position/velocity).
+int sysidAxis(ExcitationTarget target);
+
 }  // namespace px4_frequency_sweep

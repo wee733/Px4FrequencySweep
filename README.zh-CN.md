@@ -121,8 +121,27 @@ ros2 topic list | grep fmu
 越界后停止激励，捕获当前位置作为保持点，并向 PX4 报告模式失败。飞手仍应立即切换到合适的
 PX4 模式。
 
-CSV 默认写入 `/tmp/px4_frequency_sweep`。真机请改成机载电脑上的持久化绝对路径。CSV 记录
-外部指令和基础状态；PX4 内部角速度设定值、控制器输出和电机数据仍建议使用 ULog。
+CSV 默认写入 `logs`，相对于节点启动时的工作目录（不要用 `/tmp`，重启会被清空）。真机上请在
+启动时覆盖成持久化绝对路径：
+
+```bash
+ros2 launch px4_frequency_sweep frequency_sweep.launch.py --ros-args \
+  -p logging.directory:=/home/<user>/sweep_logs
+```
+
+辨识数据源仍是 ULog：`vehicle_rates_setpoint` → `vehicle_angular_velocity` 在控制器内部按 PX4
+时钟采样，而 CSV 里的遥测列只是这些 ULog topic 经 DDS 轮询后的副本。CSV 不可替代的是两点：
+
+1. 实验分段（`stage`/`repetition`/`phase`）。靠幅值阈值反推不出来——settling 阶段仍在发保持
+   指令，yaw 级又被 `MPC_YAWRAUTO_MAX` 限幅成削顶三角波。
+2. offboard 链路延迟。`ros_time_s` 减 `px4_timestamp_sample_us` 就是 ROS→PX4 的实际延迟分布，
+   ULog 看不到这个量（它只知道 setpoint 何时进入 uORB，不知道 ROS 何时发出）。这个分布是
+   sim2real 域随机化要填的数，也决定了 CSV 遥测列到多高频率还可信。
+
+这两点都依赖 `px4_timestamp_us` / `px4_timestamp_sample_us` 两列：只有 `ros_time_s` 的话，CSV
+和 ULog 之间没有任何共同时间基准，分段标记无法映射到 ULog。
+
+角速度设定值、控制器输出和电机数据仍然只在 ULog 里，不从 DDS 抄。
 
 > 真机前必须先做 SITL；第一次真机实验应使用低幅值、低最高频率、单轴、单次扫频，并保证
 > 飞手可随时通过 RC 夺回模式控制权。

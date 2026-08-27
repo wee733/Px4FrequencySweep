@@ -279,28 +279,47 @@ ros2 topic list | grep fmu
 
 When enabled, the mode writes one CSV file per activation. The file contains:
 
-- ROS time, phase, repetition, chirp frequency/envelope/value.
+- ROS time, PX4-clock timestamps, loop `dt_s`, phase, repetition, chirp frequency/envelope/value.
+- `sweep_axis` (0=roll, 1=pitch, 2=yaw, 3=thrust) and `sweep_amp` as columns.
 - Every commanded trajectory component; disabled fields are `NaN`.
-- Measured NED position/velocity, RPY attitude, and FRD angular velocity.
+- Measured NED position/velocity, attitude (`fc_roll/fc_pitch/fc_yaw`), and FRD angular velocity
+  (`ang_vel_x/y/z`). These names match the simulation sweep logs so one analysis script reads both.
 - Metadata comments with the target, frequency range, amplitude, and reference.
 
-The default directory is `/tmp/px4_frequency_sweep`, which may be cleared on reboot. Configure an
-absolute persistent path on the companion computer. PX4 ULog remains the preferred source for
-internal controller setpoints and actuator data that are not exported by the default DDS topic
-set.
+ULog remains the source for identification: `vehicle_rates_setpoint` -> `vehicle_angular_velocity`
+are sampled inside the controller on PX4's clock, while the CSV telemetry columns are DDS-polled
+copies of ULog topics. What the CSV uniquely provides is run structure (`stage`/`repetition`/
+`phase`, which amplitude thresholding cannot recover) and, via `px4_timestamp_sample_us` against
+`ros_time_s`, the offboard link delay that the ULog cannot see. Both uses depend on the PX4
+timestamp columns: `ros_time_s` alone shares no time base with the ULog.
+
+`logging.directory` defaults to `logs`, relative to the working directory the node is launched
+from. Avoid `/tmp`, which is cleared on reboot. On a companion computer, override it with an
+absolute persistent path:
+
+```bash
+ros2 launch px4_frequency_sweep frequency_sweep.launch.py --ros-args \
+  -p logging.directory:=/home/<user>/sweep_logs
+```
 
 ## Differences from the legacy ROS 1 script
 
-The shipped configuration reproduces the legacy experiment: three axes in one flight, 3 repetitions
-each, 0.1–20 Hz over 60 s at 150 Hz, amplitude 3.0 m/s² (0.9 rad on yaw), no fade, yaw locked to 0,
-and the same per-axis setpoint profiles.
+Kept from the legacy script: three axes in one flight, 3 repetitions each, 60 s per sweep at 150 Hz,
+no fade, yaw locked to an absolute 0, and the per-axis setpoint profiles.
 
-**One deliberate difference.** The ROS 1 chirp computed its phase as `sin(2π·f(t)·t)` with `f(t)`
-ramping linearly. That multiplies the ramped frequency by `t` instead of integrating it, so the
-instantaneous frequency was `f_min + 2(f_max−f_min)·t/T` — the sweep actually reached **39.9 Hz**,
-twice its nominal 20 Hz, and the frequency logged alongside each sample was wrong. This is a defect,
-not a design choice, so the phase here is integrated properly and the sweep really ends at 20 Hz.
-Archived ROS 1 data is therefore not sample-for-sample comparable with a ROS 2 run.
+The rest was corrected against a measured run (`log_2_2026-8-27-22-42-46.ulg`, 9 sweeps). Each change
+below is there because that log showed the original behaviour producing unusable data:
+
+| Changed | Why |
+|---|---|
+| Chirp phase integrated | ROS 1 computed `sin(2π·f(t)·t)` with `f(t)` ramping, which multiplies instead of integrating. It swept to **39.9 Hz**, twice nominal, and mislabelled every sample's frequency. |
+| Pitch profile symmetric with roll | ROS 1 left both horizontal velocities unset on pitch. Measured drift: **13–19 m** per sweep, putting that axis at a ~1.7 m/s forward operating point while roll sat at hover. |
+| Yaw excites rate, not angle | The 0.9 rad angle command saturated `MC_YAWRATE_MAX` (3.491 rad/s) for 1.1–1.2% of every sweep and drove motors to 1.000 for ~4%. All three yaw runs were unusable. |
+| Band 0.3–8 Hz | Measured coherence exceeded 0.6 only to **5.86 Hz** and fell below 0.1 above 12 Hz. `vehicle_rates_setpoint` is logged at 50 Hz, so 20 Hz had 2.5 samples/cycle. |
+| Logarithmic waveform | A linear 0.1–20 Hz chirp spends 1.21 s below 0.5 Hz — **0.36 of a cycle**. |
+| Horizontal limit 15 m | At 1000 m it caught nothing while pitch ran away. |
+
+Archived ROS 1 data is not sample-for-sample comparable with a run of this configuration.
 
 Structural changes: dynamic PX4 mode registration, NED-native fields, per-stage setpoint profiles,
 startup validation of PX4's horizontal pairing rule, rate-independent velocity leakage, and

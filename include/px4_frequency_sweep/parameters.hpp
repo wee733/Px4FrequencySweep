@@ -116,7 +116,9 @@ struct SafetyParameters {
 struct LoggingParameters {
   bool enabled{true};
   bool required{false};
-  std::string directory{"/tmp/px4_frequency_sweep"};
+  // Relative paths resolve against the node's working directory. The YAML ships an absolute path
+  // into the source tree's logs/ folder; this default only applies if that key is removed.
+  std::string directory{"logs"};
   int flush_every_n_samples{100};
 };
 

@@ -20,9 +20,9 @@ class CsvLogger {
   bool open(const FrequencySweepParameters& parameters,
             const std::array<float, 3>& reference_position_ned_m, float reference_yaw_ned_rad,
             std::string& error);
-  void write(double ros_time_s, ModePhase phase, const SweepStage& stage, int repetition_index,
-             float phase_elapsed_s, const SweepSample& sweep, const TrajectoryCommand& command,
-             const TelemetrySnapshot& telemetry);
+  void write(double ros_time_s, float dt_s, ModePhase phase, const SweepStage& stage,
+             int repetition_index, float phase_elapsed_s, const SweepSample& sweep,
+             const TrajectoryCommand& command, const TelemetrySnapshot& telemetry);
   void close();
 
   bool isOpen() const { return stream_.is_open(); }
@@ -30,6 +30,9 @@ class CsvLogger {
 
  private:
   static float optionalOrNan(const std::optional<float>& value);
+  // ros_time_s is a Unix epoch value (~1.8e9). The stream runs at setprecision(9) for the float
+  // columns, which would round it to 10-second granularity, so it needs fixed notation.
+  void writeEpochSeconds(double seconds);
 
   std::ofstream stream_;
   std::string path_;

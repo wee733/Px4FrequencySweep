@@ -79,18 +79,21 @@ bool CsvLogger::open(const FrequencySweepParameters& parameters,
   writeArray(stream_, reference_position_ned_m);
   stream_ << '\n';
   stream_ << "# reference_yaw_ned_rad=" << reference_yaw_ned_rad << '\n';
-  stream_ << "ros_time_s,phase,stage,target,repetition,phase_elapsed_s,sweep_frequency_hz,"
+  // Column names for angular rate and attitude match the simulation-side schema
+  // (ang_vel_*, fc_*) so one analysis script can read both sim and flight logs.
+  stream_ << "ros_time_s,px4_timestamp_us,px4_timestamp_sample_us,dt_s,phase,stage,target,"
+             "sweep_axis,sweep_amp,repetition,phase_elapsed_s,sweep_frequency_hz,"
              "sweep_envelope,"
              "sweep_value,sp_position_x,sp_position_y,sp_position_z,sp_velocity_x,"
              "sp_velocity_y,sp_velocity_z,sp_acceleration_x,sp_acceleration_y,"
              "sp_acceleration_z,sp_yaw,sp_yaw_rate,position_x,position_y,position_z,"
-             "velocity_x,velocity_y,velocity_z,roll,pitch,yaw,angular_velocity_x,"
-             "angular_velocity_y,angular_velocity_z\n";
+             "velocity_x,velocity_y,velocity_z,fc_roll,fc_pitch,fc_yaw,ang_vel_x,"
+             "ang_vel_y,ang_vel_z\n";
   stream_.flush();
   return true;
 }
 
-void CsvLogger::write(double ros_time_s, ModePhase phase, const SweepStage& stage,
+void CsvLogger::write(double ros_time_s, float dt_s, ModePhase phase, const SweepStage& stage,
                       int repetition_index, float phase_elapsed_s, const SweepSample& sweep,
                       const TrajectoryCommand& command, const TelemetrySnapshot& telemetry)
 {
@@ -98,10 +101,12 @@ void CsvLogger::write(double ros_time_s, ModePhase phase, const SweepStage& stag
     return;
   }
 
-  stream_ << ros_time_s << ',' << toString(phase) << ',' << stage.name << ','
-          << toString(stage.target) << ',' << repetition_index + 1 << ',' << phase_elapsed_s
-          << ',' << sweep.instantaneous_frequency_hz << ',' << sweep.envelope << ','
-          << sweep.value;
+  writeEpochSeconds(ros_time_s);
+  stream_ << ',' << telemetry.px4_timestamp_us << ',' << telemetry.px4_timestamp_sample_us << ','
+          << dt_s << ',' << toString(phase) << ',' << stage.name << ','
+          << toString(stage.target) << ',' << sysidAxis(stage.target) << ',' << stage.amplitude
+          << ',' << repetition_index + 1 << ',' << phase_elapsed_s << ','
+          << sweep.instantaneous_frequency_hz << ',' << sweep.envelope << ',' << sweep.value;
   for (const auto& value : command.position_ned_m) stream_ << ',' << optionalOrNan(value);
   for (const auto& value : command.velocity_ned_m_s) stream_ << ',' << optionalOrNan(value);
   for (const auto& value : command.acceleration_ned_m_s2) stream_ << ',' << optionalOrNan(value);
@@ -131,6 +136,15 @@ void CsvLogger::close()
 float CsvLogger::optionalOrNan(const std::optional<float>& value)
 {
   return value.value_or(std::numeric_limits<float>::quiet_NaN());
+}
+
+void CsvLogger::writeEpochSeconds(double seconds)
+{
+  const std::ios_base::fmtflags flags = stream_.flags();
+  const std::streamsize precision = stream_.precision();
+  stream_ << std::fixed << std::setprecision(6) << seconds;
+  stream_.flags(flags);
+  stream_.precision(precision);
 }
 
 }  // namespace px4_frequency_sweep

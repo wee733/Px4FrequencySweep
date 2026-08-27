@@ -1,14 +1,3 @@
-# Aligned with the legacy ROS 1 script (pyAircraftIden/ros_native_iris_sysid.py): three axes in
-# one flight, 3 repetitions each, 0.1..20 Hz over 60 s at 150 Hz, no fade, yaw locked to 0.
-#
-# One deliberate difference: the ROS 1 chirp multiplied its ramped frequency by t instead of
-# integrating it, so it actually swept 0.1..39.9 Hz -- twice the nominal rate. That is a defect,
-# not a design choice, so the phase here is integrated correctly and the sweep really ends at
-# 20 Hz. Every other parameter matches.
-#
-# The '/**' wildcard matches the node under any name or namespace. A key naming the node
-# explicitly would silently stop matching if the node is ever renamed or namespaced, and every
-# parameter below would fall back to its C++ default -- including the safety limits.
 /**:
   ros__parameters:
     # Empty for a real vehicle ('/fmu/...'). Set it to match the simulator's UXRCE_DDS_NS,
@@ -26,20 +15,22 @@
     # Position is captured wherever the pilot hands over, since every stage disables position
     # control during the sweep anyway; it only defines the hold point between sweeps.
     reference.position_source: "activation"
-    reference.configured_position_ned_m: [0.0, 0.0, -2.6]
-    # Yaw MUST be a fixed 0, not captured at activation. ROS 1 commanded yaw=0 throughout, which
-    # is the only reason its NED-Y excitation coincided with body-right. Capturing yaw instead
-    # silently rotates the excitation axis: activating on a 1.72 rad heading turns a nominal roll
-    # sweep into 98.9% pitch.
+    reference.configured_position_ned_m: [5.0, 0.0, -2.6]
+
     reference.yaw_source: "configured"
     reference.configured_yaw_ned_rad: 0.0
     reference.max_initial_offset_m: 2.0
 
-    # Sweep shape, shared by every stage. Matches ROS 1's argparse defaults.
+    # Sweep shape, shared by every stage.
     sweep.horizontal_frame: "ned"
-    sweep.waveform: "linear"
-    sweep.start_frequency_hz: 0.1
-    sweep.end_frequency_hz: 20.0
+    # Logarithmic, not linear. A linear 0.1-20 Hz chirp spends 1.21 s below 0.5 Hz -- 0.36 of a
+    # cycle -- so the low end carries no usable statistics while still driving the drift.
+    sweep.waveform: "logarithmic"
+    # 0.3 Hz, not 0.1: measured coherence is flat and featureless at the bottom of the band (the
+    # closed rate loop is 0 dB there) while position amplitude goes as a/omega^2.
+    sweep.start_frequency_hz: 0.3
+
+    sweep.end_frequency_hz: 8.0
     sweep.duration_s: 60.0
     sweep.phase_offset_rad: 0.0
     # ROS 1 had no fade: the excitation began and ended at full amplitude.
@@ -53,8 +44,8 @@
     sweep.settling_timeout_s: 60.0
     sweep.position_tolerance_m: 0.2
     sweep.velocity_tolerance_m_s: 0.25
-    # 150 Hz / 20 Hz = 7.5.
-    sweep.minimum_samples_per_cycle: 7.5
+    # 150 Hz / 8 Hz = 18.75, comfortably above this guard.
+    sweep.minimum_samples_per_cycle: 10.0
 
     # One flight covers all three axes, matching ROS 1's --axis all.
     sweep.sequence: ["roll", "pitch", "yaw"]
@@ -79,16 +70,13 @@
     stages.roll.yaw_offset_rad: 0.0
     stages.roll.yaw_rate_base_rad_s: 0.0
 
-    # Pitch: excite NED-X acceleration. ROS 1 set IGNORE_VX|IGNORE_VY, so BOTH horizontal
-    # velocities were unset and only VZ was held -- acceleration feed-forward with no horizontal
-    # velocity loop. X therefore drifts freely for the whole sweep, bounded only by
-    # safety.max_horizontal_deviation_m.
+
     stages.pitch.target: "acceleration_x"
     stages.pitch.amplitude: 3.0
     stages.pitch.position_enabled: [false, false, false]
-    stages.pitch.velocity_enabled: [false, false, true]
+    stages.pitch.velocity_enabled: [true, true, true]
     stages.pitch.acceleration_enabled: [true, true, true]
-    stages.pitch.integrator_publish_enabled: [false, false, false]
+    stages.pitch.integrator_publish_enabled: [true, false, false]
     stages.pitch.yaw_enabled: true
     stages.pitch.yaw_rate_enabled: true
     stages.pitch.velocity_base_ned_m_s: [0.0, 0.0, 0.0]
@@ -96,38 +84,31 @@
     stages.pitch.yaw_offset_rad: 0.0
     stages.pitch.yaw_rate_base_rad_s: 0.0
 
-    # Yaw: excite the yaw angle. ROS 1 scaled the amplitude by 0.3 (3.0 * 0.3 = 0.9 rad) and
-    # masked both horizontal velocities, exactly as in the pitch run.
-    # NOTE: MPC_YAWRAUTO_MAX slew-limits the yaw setpoint. A 0.9 rad command needs ~5.7 rad/s of
-    # yaw rate at only 1 Hz, far above the default, so the excitation PX4 actually applies is a
-    # clipped triangle rather than this sine. Check vehicle_rates_setpoint.yaw in the ulog.
-    stages.yaw.target: "yaw"
-    stages.yaw.amplitude: 0.9
+    # Yaw: excite the yaw RATE, not the yaw angle.
+
+    stages.yaw.target: "yaw_rate"
+    stages.yaw.amplitude: 0.5
     stages.yaw.position_enabled: [false, false, false]
-    stages.yaw.velocity_enabled: [false, false, true]
+    stages.yaw.velocity_enabled: [true, true, true]
     stages.yaw.acceleration_enabled: [true, true, true]
     stages.yaw.integrator_publish_enabled: [false, false, false]
-    stages.yaw.yaw_enabled: true
+    stages.yaw.yaw_enabled: false
     stages.yaw.yaw_rate_enabled: true
     stages.yaw.velocity_base_ned_m_s: [0.0, 0.0, 0.0]
     stages.yaw.acceleration_base_ned_m_s2: [0.0, 0.0, 0.0]
     stages.yaw.yaw_offset_rad: 0.0
     stages.yaw.yaw_rate_base_rad_s: 0.0
 
-    # ROS 1 integrated the excitation trapezoidally with a leaky filter: alpha=0.995 at 150 Hz,
-    # i.e. tau = -dt/ln(alpha) = 1.33 s, clamped to +/-3 m/s, starting 0.1 s into the sweep.
+
     velocity_integrator.enabled: true
     velocity_integrator.start_delay_s: 0.1
     velocity_integrator.leak_time_constant_s: 1.33
     velocity_integrator.max_abs_velocity_m_s: 3.0
 
-    # ROS 1 had every check EXCEPT the altitude band commented out. These values reproduce that:
-    # the altitude limit is real, the rest are effectively off. Tighten them once a run has been
-    # flown and the actual excursion envelope is known -- especially horizontal deviation, since
-    # the pitch stage has no horizontal velocity loop at all.
+
     safety.enabled: true
     safety.abort_on_violation: true
-    safety.max_horizontal_deviation_m: 1000.0
+    safety.max_horizontal_deviation_m: 15.0
     # ROS 1 aborted outside 0.5..5.0 m absolute against a 2.6 m hover, i.e. -2.1/+2.4 m. This
     # symmetric limit takes the tighter side.
     safety.max_vertical_deviation_m: 2.1
@@ -135,10 +116,12 @@
     safety.max_tilt_deg: 89.0
     safety.telemetry_timeout_s: 0.5
 
-    # The CSV is metadata: it records what was commanded and when. The identification data comes
-    # from the PX4 ulog (vehicle_rates_setpoint -> vehicle_angular_velocity), which is sampled in
-    # the controller on PX4's own clock rather than polled across DDS.
     logging.enabled: true
     logging.required: false
-    logging.directory: "/tmp/px4_frequency_sweep"
+    # Relative to the working directory the node is launched from, so it stays portable. Avoid
+    # /tmp: it is cleared on reboot. On a companion computer, override this with an absolute
+    # persistent path at launch:
+    #   ros2 launch px4_frequency_sweep frequency_sweep.launch.py --ros-args -p \
+    #     logging.directory:=/home/<user>/sweep_logs
+    logging.directory: "logs"
     logging.flush_every_n_samples: 100

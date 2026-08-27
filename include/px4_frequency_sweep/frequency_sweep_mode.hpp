@@ -46,8 +46,9 @@ class FrequencySweepMode : public px4_ros2::ModeBase {
   TrajectoryCommand sweepCommand(const SweepSample& sample, float dt_s,
                                  float sweep_elapsed_s);
   void publish(const TrajectoryCommand& command);
+  // dt_s is logged unclamped on purpose: loop jitter is what the column exists to expose.
   void publishAndLog(const TrajectoryCommand& command, const SweepSample& sample,
-                     float phase_elapsed_s);
+                     float phase_elapsed_s, float dt_s);
   TelemetrySnapshot telemetrySnapshot() const;
 
   static void setComponent(std::array<std::optional<float>, 3>& values, std::size_t axis,

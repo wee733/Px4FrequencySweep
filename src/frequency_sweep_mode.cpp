@@ -231,7 +231,7 @@ void FrequencySweepMode::updateSetpoint(float dt_s)
     case ModePhase::SettlingBetweenSweeps: {
       const TrajectoryCommand command =
           holdCommand(reference_position_ned_m_, reference_yaw_ned_rad_);
-      publishAndLog(command, SweepSample{}, phase_elapsed_s);
+      publishAndLog(command, SweepSample{}, phase_elapsed_s, dt_s);
 
       if (referenceReached()) {
         stable_time_s_ += bounded_dt_s;
@@ -257,7 +257,7 @@ void FrequencySweepMode::updateSetpoint(float dt_s)
       const SweepSample sample =
           sweep_generator_.sample(phase_elapsed_s, currentStage().amplitude);
       const TrajectoryCommand command = sweepCommand(sample, bounded_dt_s, phase_elapsed_s);
-      publishAndLog(command, sample, phase_elapsed_s);
+      publishAndLog(command, sample, phase_elapsed_s, dt_s);
 
       if (sample.finished) {
         ++repetition_index_;
@@ -564,11 +564,12 @@ void FrequencySweepMode::publish(const TrajectoryCommand& command)
 }
 
 void FrequencySweepMode::publishAndLog(const TrajectoryCommand& command,
-                                       const SweepSample& sample, float phase_elapsed_s)
+                                       const SweepSample& sample, float phase_elapsed_s,
+                                       float dt_s)
 {
   publish(command);
   if (csv_logger_.isOpen() && telemetryValid()) {
-    csv_logger_.write(node().get_clock()->now().seconds(), phase_, currentStage(),
+    csv_logger_.write(node().get_clock()->now().seconds(), dt_s, phase_, currentStage(),
                       repetition_index_, phase_elapsed_s, sample, command, telemetrySnapshot());
   }
 }
@@ -584,6 +585,11 @@ TelemetrySnapshot FrequencySweepMode::telemetrySnapshot() const
   snapshot.angular_velocity_frd_rad_s = {nan, nan, nan};
   if (angular_velocity_->lastValid(telemetryTimeout(parameters_))) {
     snapshot.angular_velocity_frd_rad_s = toArray(angular_velocity_->angularVelocityFrd());
+    // The accessors above drop the message header. Keep the PX4-clock timestamps so each row can
+    // be located in the ulog, and so the sample-to-receive gap gives the offboard link delay.
+    const auto& message = angular_velocity_->last();
+    snapshot.px4_timestamp_us = message.timestamp;
+    snapshot.px4_timestamp_sample_us = message.timestamp_sample;
   }
   return snapshot;
 }

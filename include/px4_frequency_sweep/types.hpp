@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string_view>
 
@@ -47,6 +48,15 @@ struct TelemetrySnapshot {
   std::array<float, 3> velocity_ned_m_s{};
   std::array<float, 3> attitude_rpy_rad{};
   std::array<float, 3> angular_velocity_frd_rad_s{};
+
+  // PX4-clock timestamps carried by the angular velocity message (microseconds since PX4 boot).
+  // These are what makes a CSV row addressable in the ulog: 'ros_time_s' is the companion
+  // computer's clock, and nothing else in the file relates the two time bases. 'publish' is when
+  // PX4 sent the message, 'sample' is when the underlying data was measured -- the gap between
+  // 'sample' and the ROS receive time is the offboard pipeline delay.
+  // Zero means the angular velocity subscription had no valid message for this row.
+  uint64_t px4_timestamp_us{0};
+  uint64_t px4_timestamp_sample_us{0};
 };
 
 }  // namespace px4_frequency_sweep

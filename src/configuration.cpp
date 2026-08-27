@@ -23,9 +23,7 @@ float declareFloat(rclcpp::Node& node, const std::string& name, float default_va
   return static_cast<float>(node.declare_parameter<double>(name, default_value));
 }
 
-// px4_ros2 builds topics as <prefix> + "/fmu/out/...". A prefix without a leading slash would
-// make that a relative name that gets resolved against the node namespace a second time, so
-// force it absolute and drop any trailing slash to avoid "//fmu".
+
 std::string normaliseTopicNamespacePrefix(std::string prefix)
 {
   while (!prefix.empty() && prefix.back() == '/') {
@@ -530,6 +528,34 @@ std::size_t targetAxis(ExcitationTarget target)
       break;
   }
   throw std::invalid_argument("Yaw targets do not have a translational axis");
+}
+
+int sysidAxis(ExcitationTarget target)
+{
+  switch (target) {
+    // A +Y acceleration command is served by rolling right, so the Y excitation identifies roll.
+    case ExcitationTarget::AccelerationY:
+      return 0;
+    // Likewise a +X acceleration is served by pitching forward.
+    case ExcitationTarget::AccelerationX:
+      return 1;
+    case ExcitationTarget::Yaw:
+    case ExcitationTarget::YawRate:
+      return 2;
+    // Vertical excitation lands on the thrust channel rather than a rotational axis.
+    case ExcitationTarget::PositionZ:
+    case ExcitationTarget::VelocityZ:
+    case ExcitationTarget::AccelerationZ:
+      return 3;
+    // Horizontal position/velocity excitation drives the whole cascade; the attitude response is
+    // not attributable to one axis, so the identification tooling cannot use a single index.
+    case ExcitationTarget::PositionX:
+    case ExcitationTarget::PositionY:
+    case ExcitationTarget::VelocityX:
+    case ExcitationTarget::VelocityY:
+      return -1;
+  }
+  throw std::logic_error("Unhandled excitation target");
 }
 
 }  // namespace px4_frequency_sweep
