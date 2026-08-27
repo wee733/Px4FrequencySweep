@@ -35,6 +35,12 @@ target_include_directories(frequency_sweep_mode PRIVATE
   include
   ${Eigen3_INCLUDE_DIRS}
 )
+# Baked in at build time so a relative logging.directory resolves against this package's source
+# tree rather than whatever directory the node happened to be launched from. Keeping it a compile
+# definition is what lets the YAML stay free of machine-specific absolute paths.
+target_compile_definitions(frequency_sweep_mode PRIVATE
+  PX4_FREQUENCY_SWEEP_PACKAGE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+)
 target_link_libraries(frequency_sweep_mode PRIVATE
   frequency_sweep_algorithm
   Eigen3::Eigen

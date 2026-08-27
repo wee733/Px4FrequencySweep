@@ -28,25 +28,39 @@
 完整配置见 [`config/frequency_sweep.yaml`](config/frequency_sweep.yaml)。
 
 
-### 初始化位置
+### 参考点
 
-推荐在选择模式时捕获当前悬停点：
-
-```yaml
-reference.position_source: "activation"
-reference.yaw_source: "activation"
-```
-
-也可以使用固定参考：
+用固定参考点（默认）。切入模式后飞机会**先飞到**这个点（阶段 `transit_to_reference`），到位并稳定后才开始激励：
 
 ```yaml
 reference.position_source: "configured"
-reference.configured_position_ned_m: [0.0, -5.0, -2.6]
+reference.configured_position_ned_m: [5.0, 0.0, -2.6]
+reference.max_transit_distance_m: 30.0
+reference.transit_timeout_s: 60.0
+```
+
+这个点随后成为**原点** —— 所有 stage 偏移量和所有安全偏差限值都以它为基准。这样不管飞手在哪里交接，每次扫频都从同一个绝对位置开始，多架次之间几何一致。
+
+`max_transit_distance_m` 是"允许飞多远"的预算，不是"必须已经在那"。超了会 abort —— 假定坐标打错了或 EKF 原点是旧的。
+
+也可以用交接点当参考：
+
+```yaml
+reference.position_source: "activation"
+```
+
+这时不发生转场，`configured_position_ned_m` 被完全忽略。
+
+偏航建议始终用 `configured` + `0.0`：ROS1 就是这么做的，也正因如此它的 NED-Y 激励等于机体右侧。捕获偏航会让激励轴跟着飞手当时的机头朝向转 —— 在 1.72 rad 朝向下激活，名义上的 roll 扫频有 98.9% 打在 pitch 上。
+
+```yaml
 reference.yaw_source: "configured"
 reference.configured_yaw_ned_rad: 0.0
 ```
 
-这里全部是 PX4 本地 NED，不是 MAVROS ENU。NED 中向上飞时 Z 为负。
+这里全部是 PX4 本地 NED，不是 MAVROS ENU：Z 向上为负，X/Y 是北/东而非机体前/右。而且是**绝对**坐标，相对 EKF 原点 —— 换个起飞点，同样的数字就是另一个地方。
+
+安全偏差是相对参考点算的，所以转场刚开始时飞机本来就差着整个转场距离。`transit_to_reference` 期间这段距离会加进水平/垂直限值，到位后移除 —— 否则参考点只要比 `safety.max_horizontal_deviation_m` 远，模式一激活就会 abort。
 
 ## 编译和运行
 

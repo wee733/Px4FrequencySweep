@@ -12,14 +12,25 @@
     mode.prevent_arming: true
     mode.activate_even_while_disarmed: false
 
-    # Position is captured wherever the pilot hands over, since every stage disables position
-    # control during the sweep anyway; it only defines the hold point between sweeps.
-    reference.position_source: "activation"
+    # "configured": on activation the mode flies to configured_position_ned_m, then treats it as
+    # the origin for every stage offset and every safety deviation limit. Use this to start every
+    # sweep from the same absolute point so multiple flights are geometrically comparable.
+    # "activation": whatever point the pilot hands over at becomes the origin, and no transit
+    # happens -- configured_position_ned_m is then ignored entirely.
+    #
+    # These are absolute PX4 local NED metres, so they are relative to the EKF origin: the same
+    # numbers mean a different place if you take off somewhere else. NED Z is negative up, and NED
+    # X/Y are North/East, not body forward/right.
+    reference.position_source: "configured"
     reference.configured_position_ned_m: [5.0, 0.0, -2.6]
 
     reference.yaw_source: "configured"
     reference.configured_yaw_ned_rad: 0.0
-    reference.max_initial_offset_m: 2.0
+    # Transit budget: how far the mode may fly to reach the reference. Exceeding it aborts, on the
+    # assumption that a reference tens of metres away is a mistyped coordinate or a stale EKF
+    # origin. Raise it if you deliberately hand over far from the reference.
+    reference.max_transit_distance_m: 30.0
+    reference.transit_timeout_s: 60.0
 
     # Sweep shape, shared by every stage.
     sweep.horizontal_frame: "ned"
@@ -118,9 +129,10 @@
 
     logging.enabled: true
     logging.required: false
-    # Relative to the working directory the node is launched from, so it stays portable. Avoid
-    # /tmp: it is cleared on reboot. On a companion computer, override this with an absolute
-    # persistent path at launch:
+    # A relative path resolves against this package's source tree (baked in by CMake), NOT against
+    # the launch working directory -- so this lands in Px4FrequencySweep/logs regardless of where
+    # 'ros2 launch' is run from, and no machine-specific path appears in the repo. Avoid /tmp: it is
+    # cleared on reboot. An absolute value is used verbatim, which is the companion-computer case:
     #   ros2 launch px4_frequency_sweep frequency_sweep.launch.py --ros-args -p \
     #     logging.directory:=/home/<user>/sweep_logs
     logging.directory: "logs"

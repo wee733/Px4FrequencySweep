@@ -4,9 +4,16 @@
 #include <cctype>
 #include <cstdint>
 #include <cmath>
+#include <filesystem>
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
+#ifndef PX4_FREQUENCY_SWEEP_PACKAGE_DIR
+// Only reachable if this file is built outside the package's CMake target; relative log paths then
+// fall back to the working directory.
+#define PX4_FREQUENCY_SWEEP_PACKAGE_DIR ""
+#endif
 
 namespace px4_frequency_sweep {
 namespace {
@@ -209,7 +216,9 @@ void validate(const FrequencySweepParameters& parameters)
   requireFinite("reference.configured_position_ned_m",
                 parameters.reference.configured_position_ned_m);
   requireFinite("reference.configured_yaw_ned_rad", parameters.reference.configured_yaw_ned_rad);
-  requirePositive("reference.max_initial_offset_m", parameters.reference.max_initial_offset_m);
+  requirePositive("reference.max_transit_distance_m",
+                  parameters.reference.max_transit_distance_m);
+  requirePositive("reference.transit_timeout_s", parameters.reference.transit_timeout_s);
 
   if (parameters.stages.empty()) {
     throw std::invalid_argument("sweep.sequence must name at least one stage");
@@ -268,9 +277,30 @@ void validate(const FrequencySweepParameters& parameters)
   if (parameters.logging.directory.empty()) {
     throw std::invalid_argument("logging.directory must not be empty");
   }
+  if (!std::filesystem::path(parameters.logging.directory).is_absolute()) {
+    throw std::logic_error("logging.directory should have been made absolute before validation");
+  }
   if (parameters.logging.flush_every_n_samples < 1) {
     throw std::invalid_argument("logging.flush_every_n_samples must be at least one");
   }
+}
+
+// A relative logging.directory is taken as relative to this package's source tree, not to the
+// launch working directory: 'logs' must land in Px4FrequencySweep/logs no matter where the node is
+// started from, and the YAML has to stay free of machine-specific absolute paths for the repo to be
+// publishable. An absolute value is honoured as given, which is the companion-computer case.
+std::string resolveLogDirectory(const std::string& configured)
+{
+  const std::filesystem::path path(configured);
+  if (path.is_absolute()) {
+    return configured;
+  }
+
+  const std::filesystem::path package_dir(PX4_FREQUENCY_SWEEP_PACKAGE_DIR);
+  if (package_dir.empty()) {
+    return std::filesystem::absolute(path).lexically_normal().string();
+  }
+  return (package_dir / path).lexically_normal().string();
 }
 
 }  // namespace
@@ -318,8 +348,24 @@ FrequencySweepParameters declareAndLoadParameters(rclcpp::Node& node)
       "reference.yaw_source", toString(parameters.reference.yaw_source)));
   parameters.reference.configured_yaw_ned_rad = declareFloat(
       node, "reference.configured_yaw_ned_rad", parameters.reference.configured_yaw_ned_rad);
-  parameters.reference.max_initial_offset_m = declareFloat(
-      node, "reference.max_initial_offset_m", parameters.reference.max_initial_offset_m);
+  parameters.reference.max_transit_distance_m = declareFloat(
+      node, "reference.max_transit_distance_m", parameters.reference.max_transit_distance_m);
+  parameters.reference.transit_timeout_s = declareFloat(
+      node, "reference.transit_timeout_s", parameters.reference.transit_timeout_s);
+  // max_initial_offset_m was a "must already be within" check; it is now a transit budget with a
+  // different name and a much larger default. An unrecognised key is silently ignored by rclcpp,
+  // so fail loudly rather than let a stale config quietly lose its limit.
+  if (node.get_node_options().parameter_overrides().end() !=
+      std::find_if(node.get_node_options().parameter_overrides().begin(),
+                   node.get_node_options().parameter_overrides().end(),
+                   [](const rclcpp::Parameter& parameter) {
+                     return parameter.get_name() == "reference.max_initial_offset_m";
+                   })) {
+    throw std::invalid_argument(
+        "reference.max_initial_offset_m was replaced by reference.max_transit_distance_m. It used "
+        "to reject a reference the aircraft was not already near; the mode now flies to the "
+        "reference, so the limit is a transit budget. Rename the key and raise the value.");
+  }
 
   parameters.stages = declareStages(node);
 
@@ -392,6 +438,7 @@ FrequencySweepParameters declareAndLoadParameters(rclcpp::Node& node)
       "logging.directory", parameters.logging.directory);
   parameters.logging.flush_every_n_samples = static_cast<int>(node.declare_parameter<int64_t>(
       "logging.flush_every_n_samples", parameters.logging.flush_every_n_samples));
+  parameters.logging.directory = resolveLogDirectory(parameters.logging.directory);
 
   validate(parameters);
   return parameters;

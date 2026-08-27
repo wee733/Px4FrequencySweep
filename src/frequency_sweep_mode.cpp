@@ -128,6 +128,7 @@ void FrequencySweepMode::onActivate()
   stage_index_ = 0;
   repetition_index_ = 0;
   stable_time_s_ = 0.F;
+  transit_distance_m_ = 0.F;
   velocity_integrator_.reset();
   reference_initialized_ = false;
 
@@ -151,13 +152,12 @@ void FrequencySweepMode::onActivate()
           : parameters_.reference.configured_yaw_ned_rad;
   reference_initialized_ = true;
 
-  const Eigen::Vector3f configured_reference{reference_position_ned_m_[0],
-                                              reference_position_ned_m_[1],
-                                              reference_position_ned_m_[2]};
-  const float reference_offset_m = (configured_reference - current_position).norm();
-  if (reference_offset_m > parameters_.reference.max_initial_offset_m) {
-    enterFailureHold("Configured reference is too far from the activation position (" +
-                     std::to_string(reference_offset_m) + " m)");
+  const Eigen::Vector3f reference{reference_position_ned_m_[0], reference_position_ned_m_[1],
+                                  reference_position_ned_m_[2]};
+  transit_distance_m_ = (reference - current_position).norm();
+  if (transit_distance_m_ > parameters_.reference.max_transit_distance_m) {
+    enterFailureHold("Reference is " + std::to_string(transit_distance_m_) +
+                     " m away, beyond reference.max_transit_distance_m");
     return;
   }
 
@@ -174,12 +174,22 @@ void FrequencySweepMode::onActivate()
     }
   }
 
-  transitionTo(ModePhase::SettlingBeforeSweep);
+  // Only enter the transit phase when there is somewhere to go. A captured reference is by
+  // definition already reached, and the deviation budget must not be widened for it.
+  const bool needs_transit = transit_distance_m_ > parameters_.sweep.position_tolerance_m;
+  transitionTo(needs_transit ? ModePhase::TransitToReference : ModePhase::SettlingBeforeSweep);
+
   RCLCPP_INFO(node().get_logger(),
-              "Frequency Sweep activated. Holding reference NED [%.2f, %.2f, %.2f], yaw %.2f "
-              "rad before excitation.",
+              "Frequency Sweep activated. Reference NED [%.2f, %.2f, %.2f], yaw %.2f rad.",
               reference_position_ned_m_[0], reference_position_ned_m_[1],
               reference_position_ned_m_[2], reference_yaw_ned_rad_);
+  if (needs_transit) {
+    RCLCPP_INFO(node().get_logger(),
+                "Flying %.1f m to the reference before excitation (timeout %.0f s).",
+                transit_distance_m_, parameters_.reference.transit_timeout_s);
+  } else {
+    RCLCPP_INFO(node().get_logger(), "Already at the reference; holding before excitation.");
+  }
 }
 
 void FrequencySweepMode::onDeactivate()
@@ -227,6 +237,20 @@ void FrequencySweepMode::updateSetpoint(float dt_s)
       std::isfinite(dt_s) ? std::clamp(dt_s, 0.F, max_control_dt_s) : 0.F;
 
   switch (phase_) {
+    case ModePhase::TransitToReference: {
+      publishAndLog(holdCommand(reference_position_ned_m_, reference_yaw_ned_rad_), SweepSample{},
+                    phase_elapsed_s);
+
+      if (referenceReached()) {
+        RCLCPP_INFO(node().get_logger(), "Reached the reference after %.1f s; settling.",
+                    phase_elapsed_s);
+        transitionTo(ModePhase::SettlingBeforeSweep);
+      } else if (phase_elapsed_s > parameters_.reference.transit_timeout_s) {
+        enterFailureHold("Timed out flying to the reference");
+      }
+      break;
+    }
+
     case ModePhase::SettlingBeforeSweep:
     case ModePhase::SettlingBetweenSweeps: {
       const TrajectoryCommand command =
@@ -394,17 +418,23 @@ std::optional<std::string> FrequencySweepMode::safetyViolation() const
     return "telemetry is stale or estimator validity flags are false";
   }
 
+  // Deviations are measured from the reference, so during transit the aircraft legitimately starts
+  // a full transit distance away. Without this allowance a reference farther than
+  // max_horizontal_deviation_m would abort the instant the mode activated.
+  const float transit_allowance_m =
+      phase_ == ModePhase::TransitToReference ? transit_distance_m_ : 0.F;
+
   const Eigen::Vector3f position = local_position_->positionNed();
   const float horizontal_deviation_m =
       std::hypot(position.x() - reference_position_ned_m_[0],
                  position.y() - reference_position_ned_m_[1]);
-  if (horizontal_deviation_m > parameters_.safety.max_horizontal_deviation_m) {
+  if (horizontal_deviation_m >
+      parameters_.safety.max_horizontal_deviation_m + transit_allowance_m) {
     return "horizontal deviation is " + std::to_string(horizontal_deviation_m) + " m";
   }
 
-  const float vertical_deviation_m =
-      std::abs(position.z() - reference_position_ned_m_[2]);
-  if (vertical_deviation_m > parameters_.safety.max_vertical_deviation_m) {
+  const float vertical_deviation_m = std::abs(position.z() - reference_position_ned_m_[2]);
+  if (vertical_deviation_m > parameters_.safety.max_vertical_deviation_m + transit_allowance_m) {
     return "vertical deviation is " + std::to_string(vertical_deviation_m) + " m";
   }
 

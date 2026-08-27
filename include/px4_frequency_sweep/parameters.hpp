@@ -35,6 +35,9 @@ struct ModeParameters {
 };
 
 struct ReferenceParameters {
+  // Configured: the mode flies to configured_position_ned_m on activation and treats it as the
+  // origin for every offset and safety limit. Activation: whatever point the pilot hands over at
+  // becomes the origin, and no transit happens.
   ReferenceSource position_source{ReferenceSource::Activation};
   std::array<float, 3> configured_position_ned_m{0.F, 0.F, -2.6F};
   // The legacy ROS 1 script commanded an absolute yaw of 0 for every run, which is what made
@@ -42,7 +45,11 @@ struct ReferenceParameters {
   // rotates the excitation axis by whatever heading the pilot happened to be holding.
   ReferenceSource yaw_source{ReferenceSource::Configured};
   float configured_yaw_ned_rad{0.F};
-  float max_initial_offset_m{2.F};
+  // How far the mode may fly to reach a configured reference. This is a transit budget, not a
+  // requirement to already be there: exceeding it aborts, on the assumption that a reference tens
+  // of metres from the aircraft is a mistyped coordinate or a stale EKF origin.
+  float max_transit_distance_m{30.F};
+  float transit_timeout_s{60.F};
 };
 
 // One excitation stage. The setpoint profile travels with the stage because the legacy ROS 1
@@ -116,8 +123,9 @@ struct SafetyParameters {
 struct LoggingParameters {
   bool enabled{true};
   bool required{false};
-  // Relative paths resolve against the node's working directory. The YAML ships an absolute path
-  // into the source tree's logs/ folder; this default only applies if that key is removed.
+  // Resolved against the working directory the node is launched from, matching the YAML default.
+  // Deliberately not /tmp, which is cleared on reboot. Override with an absolute path on a
+  // companion computer.
   std::string directory{"logs"};
   int flush_every_n_samples{100};
 };

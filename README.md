@@ -161,9 +161,27 @@ reference.yaw_source: "configured"
 reference.configured_yaw_ned_rad: 0.0
 ```
 
-All values are PX4 local **NED**, not MAVROS ENU. NED Z is negative above the local origin. A
-configured reference farther than `reference.max_initial_offset_m` from the activation position is
-rejected.
+All values are PX4 local **NED**, not MAVROS ENU. NED Z is negative above the local origin, and X/Y
+are North/East rather than body forward/right.
+
+With `reference.position_source: "configured"` the mode **flies to** the reference on activation —
+phase `transit_to_reference` — and only starts settling once it arrives. The reference then acts as
+the origin for every stage offset and every safety deviation limit, so a run always starts from the
+same absolute point regardless of where the pilot handed over.
+
+`reference.max_transit_distance_m` bounds that transit. It is a budget, not a requirement to already
+be there: exceeding it aborts on the assumption that the coordinate is mistyped or the EKF origin is
+stale. Because these are absolute local NED coordinates, the same numbers mean a different place if
+you take off elsewhere.
+
+With `"activation"` the handover point becomes the origin, no transit happens, and
+`configured_position_ned_m` is ignored.
+
+Safety deviations are measured from the reference, so during transit the aircraft legitimately
+starts a full transit distance away. That allowance is added to the horizontal and vertical limits
+while `transit_to_reference` is active and removed once the reference is reached — otherwise a
+reference farther than `safety.max_horizontal_deviation_m` would abort the instant the mode
+activated.
 
 ### Sampling guard
 

@@ -9,6 +9,11 @@ namespace px4_frequency_sweep {
 
 enum class ModePhase {
   Inactive,
+  // Flying to a configured reference that is deliberately away from the activation point. Kept
+  // separate from settling so the safety deviation budget can account for the transit: measured
+  // from the reference, the aircraft starts a full transit distance away, which would otherwise
+  // trip max_horizontal_deviation_m the instant the mode activates.
+  TransitToReference,
   SettlingBeforeSweep,
   Sweeping,
   SettlingBetweenSweeps,
@@ -21,6 +26,8 @@ inline constexpr std::string_view toString(ModePhase phase)
   switch (phase) {
     case ModePhase::Inactive:
       return "inactive";
+    case ModePhase::TransitToReference:
+      return "transit_to_reference";
     case ModePhase::SettlingBeforeSweep:
       return "settling_before_sweep";
     case ModePhase::Sweeping:
